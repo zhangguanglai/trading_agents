@@ -196,9 +196,9 @@ def send_login_code(email: str, code: str) -> Optional[str]:
     smtp_host = get_env_alias(["MAIL_HOST", "MAIL_SERVER", "SMTP_HOST"]).strip()
     if not smtp_host:
         print(f"[auth] login code for {email}: {code}")
-        if os.getenv("APP_ENV", "development") != "production":
-            return code
-        return None
+        # 无论开发环境还是生产环境，只要没有配置 SMTP，都返回验证码到前端
+        # 生产环境用户需要在 Railway 环境变量中配置 SMTP，否则验证码会显示在日志中
+        return code
 
     smtp_port = int(get_env_alias(["MAIL_PORT", "SMTP_PORT"]) or "587")
     smtp_user = get_env_alias(["MAIL_USER", "MAIL_USERNAME", "SMTP_USER"]).strip()
