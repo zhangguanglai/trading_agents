@@ -168,7 +168,7 @@ class TradingAgentsGraph:
             if api_key:
                 kwargs["api_key"] = api_key
 
-        elif provider == "openai":
+        elif provider in ("openai", "deepseek"):
             reasoning_effort = self.config.get("openai_reasoning_effort")
             if reasoning_effort:
                 kwargs["reasoning_effort"] = reasoning_effort
