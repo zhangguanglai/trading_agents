@@ -4444,6 +4444,10 @@ if os.path.exists(dist_path):
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
+        # API 路由不应该被前端路由捕获
+        if full_path.startswith("v1/") or full_path.startswith("health"):
+            return FileResponse(os.path.join(os.path.realpath(dist_path), "index.html"))
+        
         # 1. Define and resolve the absolute safe root
         base_path = os.path.realpath(dist_path)
         
