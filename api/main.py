@@ -1620,6 +1620,7 @@ async def _run_job_inner(
             config=config,
             data_collector=_shared_data_collector,
         )
+        _log(f"[Agent] TradingAgentsGraph initialized: provider={config.get('llm_provider')}, deep={config.get('deep_think_llm')}, quick={config.get('quick_think_llm')}")
         final_state: Optional[Dict[str, Any]] = None
 
         # 强制单周期：多个 horizon 时只取第一个，避免 dual-horizon 双倍开销
@@ -1665,7 +1666,13 @@ async def _run_job_inner(
             })
             _log(f"[DualHorizon] Collecting data for {ticker} {request.trade_date} (horizons={request.horizons})…")
             collect_start_t = time.time()
-            await asyncio.to_thread(graph.data_collector.collect, ticker, request.trade_date, horizons=request.horizons)
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(graph.data_collector.collect, ticker, request.trade_date, horizons=request.horizons),
+                    timeout=120.0  # 2分钟数据采集超时
+                )
+            except asyncio.TimeoutError:
+                _log(f"[DataCollect] Timed out after 120s, continuing with partial data")
             _log(f"[Timer] Data Collection step in _run_job took {time.time() - collect_start_t:.2f}s")
 
             _emit_job_event(job_id, "agent.tool_call", {
@@ -1685,6 +1692,7 @@ async def _run_job_inner(
                 """Async helper to run analysis for a single horizon."""
                 # 根据周期过滤 analyst，共享已采集的数据缓存
                 horizon_analysts = _get_horizon_analysts(horizon, request.selected_analysts)
+                _log(f"[Agent] Processing horizon={horizon}, analysts={horizon_analysts}")
                 horizon_graph = TradingAgentsGraph(
                     selected_analysts=horizon_analysts,
                     debug=False,
@@ -1731,6 +1739,7 @@ async def _run_job_inner(
 
                 # 通过 ContextVar 将 tracker 传入 async 节点（LangGraph 不传递 schema 外的字段）
                 _tracker_token = current_tracker_var.set(h_tracker)
+                _log(f"[Agent] Starting LangGraph astream for {horizon_label} ({horizon})")
                 try:
                     async for chunk in horizon_graph.graph.astream(init_state, **h_args):
                         horizon_final = chunk
@@ -3007,7 +3016,8 @@ async def chat_completions(
                 )
                 await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
             except Exception as exc:
-                _log(f"[chat] _extract_and_run failed: {exc}")
+                import traceback
+                _log(f"[chat] _extract_and_run failed: {exc}\n{traceback.format_exc()}")
                 _emit_job_event(job_id, "job.failed", {"error": str(exc)})
 
         _create_tracked_task(_extract_and_run())
