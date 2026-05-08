@@ -223,9 +223,12 @@ async def lifespan(app: FastAPI):
     from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates
     _load_cn_trade_dates()
     _log("Trade calendar pre-loaded.")
-    # Pre-load stock + ETF name map
-    await asyncio.to_thread(_load_cn_stock_map)
-    _log("Stock map pre-loaded on startup.")
+    # Pre-load stock + ETF name map (with timeout to avoid blocking startup)
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_load_cn_stock_map), timeout=30.0)
+        _log("Stock map pre-loaded on startup.")
+    except asyncio.TimeoutError:
+        _log("[StockMap] Pre-load timed out after 30s, will lazy-load on first use.")
     yield
     _log("Shutting down: Cleaning up resources...")
     _executor.shutdown(wait=True)
