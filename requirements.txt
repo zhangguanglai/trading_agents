@@ -10,6 +10,7 @@ pandas
 yfinance
 akshare
 baostock
+tushare
 stockstats
 rank-bm25
 requests
