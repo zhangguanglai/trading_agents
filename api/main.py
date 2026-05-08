@@ -2411,12 +2411,26 @@ async def _stream_job_events(job_id: str):
     store = get_job_store()
     yield _sse_pack("job.ready", {"job_id": job_id})
     try:
+        # 心跳任务：每 30 秒发送一次 keep-alive 注释行，防止连接被代理/浏览器关闭
+        heartbeat_interval = 30.0
+        last_event_time = asyncio.get_event_loop().time()
+        heartbeat_sent = False
+
         async for event in store.subscribe(job_id):
             evt_name = event["event"]
             yield _sse_pack(evt_name, event["data"])
+            last_event_time = asyncio.get_event_loop().time()
+            heartbeat_sent = False
             if evt_name in ("job.completed", "job.failed"):
                 yield "event: done\ndata: [DONE]\n\n"
                 return
+
+            # 如果距离上次事件超过心跳间隔，发送心跳
+            now = asyncio.get_event_loop().time()
+            if now - last_event_time >= heartbeat_interval and not heartbeat_sent:
+                yield ":heartbeat\n\n"
+                heartbeat_sent = True
+                last_event_time = now
     except asyncio.CancelledError:
         # Client disconnected (e.g., browser closed or network timeout)
         # This is normal for long-running SSE streams, no need to crash
@@ -4486,6 +4500,6 @@ def run() -> None:
         port=8000,
         reload=False,
         log_config=log_config,
-        timeout_keep_alive=120,
+        timeout_keep_alive=600,       # 10分钟，匹配分析总耗时
         timeout_graceful_shutdown=30,
     )
