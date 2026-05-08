@@ -223,9 +223,22 @@ async def lifespan(app: FastAPI):
     from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates
     _load_cn_trade_dates()
     _log("Trade calendar pre-loaded.")
-    # Pre-load stock + ETF name map
-    await asyncio.to_thread(_load_cn_stock_map)
-    _log("Stock map pre-loaded on startup.")
+    # Kick off stock + ETF name map loading as a non-blocking background task.
+    # The map is used only for stock-name search (optional feature) and must not
+    # block application startup.  A 30-second timeout guards against slow network
+    # calls; if it fires the background task retries automatically.
+    _STOCK_MAP_STARTUP_TIMEOUT = float(os.getenv("TA_STOCK_MAP_TIMEOUT", "30"))
+    global _cn_stock_map_loading
+    _cn_stock_map_loading = True
+    _create_tracked_task(
+        _load_cn_stock_map_background(
+            timeout=_STOCK_MAP_STARTUP_TIMEOUT,
+            retry_delay=60.0,
+            max_retries=5,
+        ),
+        label="StockMap background loader",
+    )
+    _log(f"Stock map loading started in background (timeout={_STOCK_MAP_STARTUP_TIMEOUT}s per attempt).")
     yield
     _log("Shutting down: Cleaning up resources...")
     _executor.shutdown(wait=True)
@@ -294,6 +307,7 @@ _background_tasks: set = set()
 _cn_stock_map: Optional[Dict[str, str]] = None  # name -> "XXXXXX.SH/SZ"
 _cn_stock_reverse_map: Optional[Dict[str, str]] = None  # code -> name
 _cn_stock_map_lock = Lock()
+_cn_stock_map_loading: bool = False  # True while a background load is in progress
 
 
 def _utcnow_iso() -> str:
@@ -335,13 +349,18 @@ _cn_stock_map_loaded_at: float = 0  # timestamp of last load
 _STOCK_MAP_TTL = 7 * 86400  # 7 days
 
 
-def _load_cn_stock_map() -> Dict[str, str]:
+def _load_cn_stock_map(timeout: Optional[float] = None) -> Dict[str, str]:
     """Lazy-load and cache A-share stock + ETF/fund name→code mapping (7-day TTL).
 
     Uses akshare stock_info_a_code_name (static list, no anti-crawl) for A-shares,
     plus fund_name_em for ETFs/funds.
+
+    Args:
+        timeout: Optional wall-clock timeout in seconds. When set, a TimeoutError is
+                 raised if the load takes longer than this many seconds. The cache is
+                 left as-is (empty dict) so callers can still function in degraded mode.
     """
-    global _cn_stock_map, _cn_stock_reverse_map, _cn_stock_map_loaded_at
+    global _cn_stock_map, _cn_stock_reverse_map, _cn_stock_map_loaded_at, _cn_stock_map_loading
     import time as _time
     now = _time.time()
     if _cn_stock_map is not None and (now - _cn_stock_map_loaded_at) > _STOCK_MAP_TTL:
@@ -353,19 +372,26 @@ def _load_cn_stock_map() -> Dict[str, str]:
         if _cn_stock_map is not None and (now - _cn_stock_map_loaded_at) <= _STOCK_MAP_TTL:
             return _cn_stock_map
         result: Dict[str, str] = {}
+        deadline = (_time.time() + timeout) if timeout is not None else None
         try:
             import akshare as ak
             # A-share stocks (static list, no anti-crawl issue)
+            _log("[StockMap] Loading A-share stock list...")
             df = ak.stock_info_a_code_name()
+            if deadline is not None and _time.time() > deadline:
+                raise TimeoutError(f"[StockMap] Timed out after {timeout}s while loading A-share list")
             for _, row in df.iterrows():
                 name = str(row.get("name", "")).strip()
                 code = str(row.get("code", "")).strip()
                 if name and code:
                     result[name] = _normalize_symbol(code)
             stock_count = len(result)
+            _log(f"[StockMap] A-share list loaded: {stock_count} stocks. Loading ETF/fund list...")
             # ETF / funds
             fund_count = 0
             try:
+                if deadline is not None and _time.time() > deadline:
+                    raise TimeoutError(f"[StockMap] Timed out after {timeout}s before loading ETF/fund list")
                 fund_df = ak.fund_name_em()
                 existing_codes = set(result.values())
                 for _, row in fund_df.iterrows():
@@ -377,18 +403,68 @@ def _load_cn_stock_map() -> Dict[str, str]:
                             result[name] = normalized
                             existing_codes.add(normalized)
                 fund_count = len(result) - stock_count
+            except TimeoutError:
+                raise
             except Exception as fe:
                 _log(f"[StockMap] ETF/fund load skipped: {fe}")
             _cn_stock_map = result
             _cn_stock_reverse_map = {code: name for name, code in result.items()}
             _cn_stock_map_loaded_at = now
+            _cn_stock_map_loading = False
             _log(f"[StockMap] Loaded {stock_count} stocks + {fund_count} ETFs/funds = {len(result)} total.")
+        except TimeoutError as te:
+            _log(f"[StockMap] Load timed out: {te}. App will continue with empty map; background retry scheduled.")
+            _cn_stock_map_loading = False
+            if _cn_stock_map is None:
+                _cn_stock_map = {}
+                _cn_stock_reverse_map = {}
         except Exception as e:
             _log(f"[StockMap] Failed to load: {e}")
+            _cn_stock_map_loading = False
             if _cn_stock_map is None:
                 _cn_stock_map = {}
                 _cn_stock_reverse_map = {}
     return _cn_stock_map
+
+
+async def _load_cn_stock_map_background(
+    *,
+    timeout: float = 30.0,
+    retry_delay: float = 60.0,
+    max_retries: int = 5,
+) -> None:
+    """Background async task: load the stock map without blocking app startup.
+
+    Runs _load_cn_stock_map() in a thread pool with *timeout* seconds.  If the
+    load times out or fails, it waits *retry_delay* seconds and retries up to
+    *max_retries* times.  Once the cache is warm (non-empty) it exits silently.
+    """
+    global _cn_stock_map_loading
+    for attempt in range(1, max_retries + 1):
+        # Already loaded by a concurrent path — nothing to do.
+        if _cn_stock_map and len(_cn_stock_map) > 0:
+            _log("[StockMap] Cache already warm, background loader exiting.")
+            _cn_stock_map_loading = False
+            return
+        _log(f"[StockMap] Background load attempt {attempt}/{max_retries} (timeout={timeout}s)...")
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(_load_cn_stock_map, timeout),
+                timeout=timeout + 5,  # outer asyncio timeout slightly larger than inner
+            )
+        except asyncio.TimeoutError:
+            _log(f"[StockMap] Background attempt {attempt} timed out (asyncio). Will retry in {retry_delay}s.")
+        except Exception as exc:
+            _log(f"[StockMap] Background attempt {attempt} failed: {exc}. Will retry in {retry_delay}s.")
+        # If the map is now populated, we're done.
+        if _cn_stock_map and len(_cn_stock_map) > 0:
+            _log(f"[StockMap] Background load succeeded on attempt {attempt}.")
+            _cn_stock_map_loading = False
+            return
+        if attempt < max_retries:
+            await asyncio.sleep(retry_delay)
+    _log(f"[StockMap] All {max_retries} background load attempts exhausted. Stock name search will be unavailable.")
+    _cn_stock_map_loading = False
 
 
 def _get_reverse_stock_map() -> Dict[str, str]:
