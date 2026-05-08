@@ -4,7 +4,8 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
 COPY frontend/ ./
-RUN npm run build
+# 生产环境构建：移除 .env.local 使前端使用相对路径（同域名）
+RUN rm -f .env.local && npm run build
 
 # Stage 2: Final Image (多架构目标镜像)
 FROM ghcr.io/astral-sh/uv:python3.10-bookworm-slim AS runtime
