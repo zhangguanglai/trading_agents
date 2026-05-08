@@ -27,8 +27,8 @@ class DataProviderRegistry:
 
 def build_default_registry() -> DataProviderRegistry:
     registry = DataProviderRegistry()
-    registry.register(CnTushareProvider())
-    registry.register(CnAkshareProvider())
+    registry.register(CnAkshareProvider())   # AKShare 优先（更稳定）
+    registry.register(CnTushareProvider())   # Tushare 次之
     registry.register(CnBaoStockProvider())
     registry.register(YFinanceProvider())
     registry.register(AlphaVantageProvider())

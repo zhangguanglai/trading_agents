@@ -31,13 +31,13 @@ DEFAULT_CONFIG = {
     "provider_trace": os.getenv("TA_TRACE", "1").lower() in ("1", "true", "yes", "on"),
     
     # Data vendor configuration
-    # 优先级顺序: 先尝试 Tushare，然后是 AKShare、BaoStock，最后是 yfinance
+    # 优先级顺序: 先尝试 AKShare（更稳定），然后是 Tushare、BaoStock，最后是 yfinance
     "data_vendors": {
-        "core_stock_apis": "cn_tushare,cn_akshare,cn_baostock,yfinance",
-        "technical_indicators": "cn_tushare,cn_akshare,cn_baostock,yfinance",
-        "fundamental_data": "cn_tushare,cn_akshare,cn_baostock,yfinance",
-        "news_data": "cn_tushare,cn_akshare,cn_baostock,yfinance",
-        "realtime_data": "cn_tushare,cn_akshare",
+        "core_stock_apis": "cn_akshare,cn_tushare,cn_baostock,yfinance",
+        "technical_indicators": "cn_akshare,cn_tushare,cn_baostock,yfinance",
+        "fundamental_data": "cn_akshare,cn_tushare,cn_baostock,yfinance",
+        "news_data": "cn_akshare,cn_tushare,cn_baostock,yfinance",
+        "realtime_data": "cn_akshare,cn_tushare",
     },
     "tool_vendors": {},
 }
