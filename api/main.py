@@ -2407,14 +2407,26 @@ def _fetch_index_kline(symbol: str, start_date: str, end_date: str) -> List[Dict
 
 
 async def _stream_job_events(job_id: str):
+    import asyncio
     store = get_job_store()
     yield _sse_pack("job.ready", {"job_id": job_id})
-    async for event in store.subscribe(job_id):
-        evt_name = event["event"]
-        yield _sse_pack(evt_name, event["data"])
-        if evt_name in ("job.completed", "job.failed"):
-            yield "event: done\ndata: [DONE]\n\n"
-            return
+    try:
+        async for event in store.subscribe(job_id):
+            evt_name = event["event"]
+            yield _sse_pack(evt_name, event["data"])
+            if evt_name in ("job.completed", "job.failed"):
+                yield "event: done\ndata: [DONE]\n\n"
+                return
+    except asyncio.CancelledError:
+        # Client disconnected (e.g., browser closed or network timeout)
+        # This is normal for long-running SSE streams, no need to crash
+        _log(f"[SSE] Client disconnected for job {job_id}")
+        return
+    except Exception as e:
+        _log(f"[SSE] Error streaming job {job_id}: {e}")
+        yield _sse_pack("job.failed", {"error": f"Stream error: {str(e)}"})
+        yield "event: done\ndata: [DONE]\n\n"
+        return
 
 
 @app.get("/healthz")
@@ -4468,4 +4480,12 @@ def run() -> None:
     from pathlib import Path
 
     log_config = str(Path(__file__).parent / "logging_config.yaml")
-    uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=False, log_config=log_config)
+    uvicorn.run(
+        "api.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        log_config=log_config,
+        timeout_keep_alive=120,
+        timeout_graceful_shutdown=30,
+    )
