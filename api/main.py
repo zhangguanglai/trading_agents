@@ -1613,6 +1613,7 @@ async def _run_job_inner(
             )
             return
 
+        _log(f"[Checkpoint] Job {job_id}: initializing TradingAgentsGraph for {normalized_symbol}")
         _shared_data_collector.ref(request.symbol, request.trade_date)
         graph = TradingAgentsGraph(
             selected_analysts=request.selected_analysts,
@@ -1620,7 +1621,7 @@ async def _run_job_inner(
             config=config,
             data_collector=_shared_data_collector,
         )
-        _log(f"[Agent] TradingAgentsGraph initialized: provider={config.get('llm_provider')}, deep={config.get('deep_think_llm')}, quick={config.get('quick_think_llm')}")
+        _log(f"[Checkpoint] Job {job_id}: TradingAgentsGraph initialized (selected_analysts={request.selected_analysts})")
         final_state: Optional[Dict[str, Any]] = None
 
         # 强制单周期：多个 horizon 时只取第一个，避免 dual-horizon 双倍开销
@@ -1642,7 +1643,12 @@ async def _run_job_inner(
                 user_intent["horizons"] = request.horizons
             else:
                 # 直接 POST /v1/analyze 时的兜底（无预解析 intent）
-                user_intent = await asyncio.to_thread(_parse_intent, request.query, graph.quick_thinking_llm, fallback_ticker=ticker)
+                _log(f"[Checkpoint] Job {job_id}: parsing intent from query (no pre-parsed intent)")
+                try:
+                    user_intent = await asyncio.to_thread(_parse_intent, request.query, graph.quick_thinking_llm, fallback_ticker=ticker)
+                except Exception as _intent_exc:
+                    logger.error(f"[Checkpoint] Job {job_id}: intent parsing failed: {_intent_exc}\n{traceback.format_exc()}")
+                    raise
                 if not request.horizons:
                     request.horizons = user_intent["horizons"]
                 user_intent["horizons"] = request.horizons
@@ -1664,6 +1670,7 @@ async def _run_job_inner(
                 "agent": "数据采集", "tool": "data_collector",
                 "description": f"预加载 {ticker} 近{lookback_label}数据…",
             })
+            _log(f"[Checkpoint] Job {job_id}: starting data collection for {ticker} {request.trade_date} (horizons={request.horizons})")
             _log(f"[DualHorizon] Collecting data for {ticker} {request.trade_date} (horizons={request.horizons})…")
             collect_start_t = time.time()
             try:
@@ -1672,7 +1679,11 @@ async def _run_job_inner(
                     timeout=120.0  # 2分钟数据采集超时
                 )
             except asyncio.TimeoutError:
-                _log(f"[DataCollect] Timed out after 120s, continuing with partial data")
+                _log(f"[Checkpoint] Job {job_id}: data collection timed out after 120s, continuing with partial data")
+            except Exception as _collect_exc:
+                logger.error(f"[Checkpoint] Job {job_id}: data collection FAILED after {time.time() - collect_start_t:.2f}s: {_collect_exc}\n{traceback.format_exc()}")
+                raise
+            _log(f"[Checkpoint] Job {job_id}: data collection completed in {time.time() - collect_start_t:.2f}s")
             _log(f"[Timer] Data Collection step in _run_job took {time.time() - collect_start_t:.2f}s")
 
             _emit_job_event(job_id, "agent.tool_call", {
@@ -1690,9 +1701,11 @@ async def _run_job_inner(
 
             async def _process_horizon(horizon: str):
                 """Async helper to run analysis for a single horizon."""
+                horizon_start_t = time.time()
+                _log(f"[Checkpoint] Job {job_id}: starting horizon '{horizon}' analysis for {ticker}")
                 # 根据周期过滤 analyst，共享已采集的数据缓存
                 horizon_analysts = _get_horizon_analysts(horizon, request.selected_analysts)
-                _log(f"[Agent] Processing horizon={horizon}, analysts={horizon_analysts}")
+                _log(f"[Checkpoint] Job {job_id}: horizon '{horizon}' analysts={horizon_analysts}")
                 horizon_graph = TradingAgentsGraph(
                     selected_analysts=horizon_analysts,
                     debug=False,
@@ -1731,6 +1744,7 @@ async def _run_job_inner(
                 last_report: Dict[str, str] = {}
                 seen: Dict[str, bool] = {}   # 追踪哪些字段已出现过，避免重复事件
                 horizon_final = None
+                chunk_count = 0
 
                 # DB 更新使用短生命周期 session，避免长期占用连接池
                 def _horizon_partial_update(updates: dict):
@@ -1739,9 +1753,12 @@ async def _run_job_inner(
 
                 # 通过 ContextVar 将 tracker 传入 async 节点（LangGraph 不传递 schema 外的字段）
                 _tracker_token = current_tracker_var.set(h_tracker)
-                _log(f"[Agent] Starting LangGraph astream for {horizon_label} ({horizon})")
+                _log(f"[Checkpoint] Job {job_id}: horizon '{horizon}' entering astream loop")
                 try:
                     async for chunk in horizon_graph.graph.astream(init_state, **h_args):
+                        chunk_count += 1
+                        if chunk_count == 1:
+                            _log(f"[Checkpoint] Job {job_id}: horizon '{horizon}' received first astream chunk (elapsed {time.time() - horizon_start_t:.2f}s)")
                         horizon_final = chunk
 
                         # ── 并行感知的状态推进 ──────────────────
@@ -1800,11 +1817,19 @@ async def _run_job_inner(
                         if db_updates:
                             await asyncio.to_thread(_horizon_partial_update, db_updates)
                 except Exception as e:
-                    _log(f"Error during horizon streaming ({horizon}): {e}")
+                    logger.error(
+                        f"[Checkpoint] Job {job_id}: horizon '{horizon}' astream FAILED "
+                        f"after {chunk_count} chunks ({time.time() - horizon_start_t:.2f}s): "
+                        f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+                    )
                     raise
                 finally:
                     current_tracker_var.reset(_tracker_token)
 
+                _log(
+                    f"[Checkpoint] Job {job_id}: horizon '{horizon}' astream completed "
+                    f"({chunk_count} chunks, {time.time() - horizon_start_t:.2f}s)"
+                )
                 horizon_states[horizon] = horizon_final
                 for agent, st in h_tracker.status.items():
                     if st not in ("completed", "skipped"):
@@ -1819,7 +1844,10 @@ async def _run_job_inner(
             horizon_errors = []
             for i, r in enumerate(results):
                 if isinstance(r, Exception):
-                    _log(f"Horizon '{request.horizons[i]}' failed: {r}")
+                    logger.error(
+                        f"[Checkpoint] Job {job_id}: horizon '{request.horizons[i]}' failed: "
+                        f"{type(r).__name__}: {r}\n{''.join(traceback.format_exception(type(r), r, r.__traceback__))}"
+                    )
                     horizon_errors.append(f"{request.horizons[i]}: {r}")
             if horizon_errors:
                 raise RuntimeError(f"Horizon analysis failed: {'; '.join(horizon_errors)}")
@@ -1852,6 +1880,7 @@ async def _run_job_inner(
                     short_r.get("analyst_traces", []) + medium_r.get("analyst_traces", [])
                 ),
             }
+            _log(f"[Checkpoint] Job {job_id}: all horizons completed, starting structured extraction")
             # LLM 结构化提取（目标价、止损、信心、风险、关键指标）
             # 注意：必须在 _set_job(status="completed") 之前完成，否则 SSE 超时
             # 会因为看到 status="completed" 而提前关闭流，导致 job.completed 事件丢失。
@@ -1863,8 +1892,9 @@ async def _run_job_inner(
                     fundamentals_report=primary_r.get("fundamentals_report", ""),
                     config=config,
                 )
+                _log(f"[Checkpoint] Job {job_id}: structured extraction completed")
             except Exception as e:
-                _log(f"Structured extraction failed (non-fatal): {e}")
+                logger.error(f"[Checkpoint] Job {job_id}: structured extraction failed (non-fatal): {e}\n{traceback.format_exc()}")
 
             resolved = await asyncio.to_thread(
                 report_service.resolve_report_fields,
@@ -1881,6 +1911,7 @@ async def _run_job_inner(
             })
 
             # 自动保存报告到数据库
+            _log(f"[Checkpoint] Job {job_id}: saving report to DB (save_report={save_report})")
             if save_report:
                 def _save_report_sync():
                     with get_db_ctx() as save_db:
@@ -1903,10 +1934,12 @@ async def _run_job_inner(
 
                 try:
                     await asyncio.to_thread(_save_report_sync)
+                    _log(f"[Checkpoint] Job {job_id}: report saved to DB successfully")
                 except Exception as e:
-                    _log(f"Failed to save report: {e}")
+                    logger.error(f"[Checkpoint] Job {job_id}: failed to save report to DB: {e}\n{traceback.format_exc()}")
 
             # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
+            _log(f"[Checkpoint] Job {job_id}: marking job as completed (dual_horizon)")
             _set_job(job_id, status="completed", result=result,
                      decision=decision, finished_at=_utcnow_iso())
             _emit_job_event(job_id, "job.completed", {
@@ -1955,8 +1988,13 @@ async def _run_job_inner(
             seen: Dict[str, bool] = {}
 
             _tracker_token = current_tracker_var.set(tracker)
+            _log(f"[Checkpoint] Job {job_id}: entering single-horizon astream loop (stream_events=True)")
+            _stream_chunk_count = 0
             try:
                 async for chunk in graph.graph.astream(init_state, **args):
+                    _stream_chunk_count += 1
+                    if _stream_chunk_count == 1:
+                        _log(f"[Checkpoint] Job {job_id}: received first astream chunk")
                     final_state = chunk
                     # ── 并行感知的状态推进 ──────────────────
                     # 1. 每个 analyst 报告首次出现 → completed
@@ -2055,7 +2093,11 @@ async def _run_job_inner(
                             )
                 
             except Exception as e:
-                _log(f"Error during default streaming: {e}")
+                logger.error(
+                    f"[Checkpoint] Job {job_id}: single-horizon astream FAILED "
+                    f"after {_stream_chunk_count} chunks: {type(e).__name__}: {e}\n{traceback.format_exc()}"
+                )
+                raise
             finally:
                 current_tracker_var.reset(_tracker_token)
         else:
