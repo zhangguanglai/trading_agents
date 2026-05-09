@@ -2831,15 +2831,25 @@ async def _ai_extract_symbol_and_date_streaming(
         _log(f"[LLM Debug] Streaming StockExtract with model: {getattr(llm, 'model_name', 'unknown')}")
 
         full_content = ""
-        async for chunk in llm.astream(prompt):
-            token = chunk.content if hasattr(chunk, "content") else str(chunk)
-            full_content += token
-            if token:
-                _emit_job_event(job_id, "agent.token", {
-                    "agent": "意图解析",
-                    "report": "stock_extract",
-                    "token": token,
-                })
+        try:
+            # 添加 60 秒超时，防止 LLM 调用挂起
+            async def _stream_extract():
+                nonlocal full_content
+                async for chunk in llm.astream(prompt):
+                    token = chunk.content if hasattr(chunk, "content") else str(chunk)
+                    full_content += token
+                    if token:
+                        _emit_job_event(job_id, "agent.token", {
+                            "agent": "意图解析",
+                            "report": "stock_extract",
+                            "token": token,
+                        })
+
+            await asyncio.wait_for(_stream_extract(), timeout=60.0)
+        except asyncio.TimeoutError:
+            _log(f"[StockExtract] LLM streaming timed out after 60s")
+        except Exception as e:
+            _log(f"[StockExtract streaming] LLM failed: {e}")
 
         _log(f"[LLM Debug] StockExtract response: {full_content[:200]}")
         m = re.search(r"\{.*\}", full_content, re.DOTALL)
