@@ -105,52 +105,70 @@ class GraphSetup:
         def analyst_done_node(_state):
             return {}
 
+        def _wrap_with_logging(node_fn, name):
+            """Wrap analyst node with entry/exit logging for diagnostics."""
+            import logging
+            import time
+            import traceback
+            _logger = logging.getLogger(__name__)
+            async def _wrapped(state):
+                start = time.time()
+                _logger.info(f"[GraphNode] {name} started")
+                try:
+                    result = await node_fn(state)
+                    _logger.info(f"[GraphNode] {name} finished in {time.time()-start:.2f}s")
+                    return result
+                except Exception as e:
+                    _logger.error(f"[GraphNode] {name} FAILED after {time.time()-start:.2f}s: {e}\n{traceback.format_exc()}")
+                    raise
+            return _wrapped
+
         if "market" in selected_analysts:
-            analyst_nodes["market"] = factories["create_market_analyst"](
+            analyst_nodes["market"] = _wrap_with_logging(factories["create_market_analyst"](
                 self.quick_thinking_llm, self.data_collector
-            )
+            ), "Market Analyst")
             tool_nodes["market"] = self.tool_nodes["market"]
             done_nodes["market"] = analyst_done_node
 
         if "social" in selected_analysts:
-            analyst_nodes["social"] = factories["create_social_media_analyst"](
+            analyst_nodes["social"] = _wrap_with_logging(factories["create_social_media_analyst"](
                 self.quick_thinking_llm, self.data_collector
-            )
+            ), "Social Analyst")
             tool_nodes["social"] = self.tool_nodes["social"]
             done_nodes["social"] = analyst_done_node
 
         if "news" in selected_analysts:
-            analyst_nodes["news"] = factories["create_news_analyst"](
+            analyst_nodes["news"] = _wrap_with_logging(factories["create_news_analyst"](
                 self.quick_thinking_llm, self.data_collector
-            )
+            ), "News Analyst")
             tool_nodes["news"] = self.tool_nodes["news"]
             done_nodes["news"] = analyst_done_node
 
         if "fundamentals" in selected_analysts:
-            analyst_nodes["fundamentals"] = factories["create_fundamentals_analyst"](
+            analyst_nodes["fundamentals"] = _wrap_with_logging(factories["create_fundamentals_analyst"](
                 self.quick_thinking_llm, self.data_collector
-            )
+            ), "Fundamentals Analyst")
             tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
             done_nodes["fundamentals"] = analyst_done_node
 
         if "macro" in selected_analysts:
-            analyst_nodes["macro"] = factories["create_macro_analyst"](
+            analyst_nodes["macro"] = _wrap_with_logging(factories["create_macro_analyst"](
                 self.quick_thinking_llm, self.data_collector
-            )
+            ), "Macro Analyst")
             tool_nodes["macro"] = self.tool_nodes["macro"]
             done_nodes["macro"] = analyst_done_node
 
         if "smart_money" in selected_analysts:
-            analyst_nodes["smart_money"] = factories["create_smart_money_analyst"](
+            analyst_nodes["smart_money"] = _wrap_with_logging(factories["create_smart_money_analyst"](
                 self.quick_thinking_llm, self.data_collector
-            )
+            ), "Smart Money Analyst")
             tool_nodes["smart_money"] = self.tool_nodes["smart_money"]
             done_nodes["smart_money"] = analyst_done_node
 
         if "volume_price" in selected_analysts:
-            analyst_nodes["volume_price"] = factories["create_volume_price_analyst"](
+            analyst_nodes["volume_price"] = _wrap_with_logging(factories["create_volume_price_analyst"](
                 self.quick_thinking_llm, self.data_collector
-            )
+            ), "Volume Price Analyst")
             tool_nodes["volume_price"] = self.tool_nodes["volume_price"]
             done_nodes["volume_price"] = analyst_done_node
 
