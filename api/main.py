@@ -2233,7 +2233,11 @@ async def _run_job_inner(
 
 def _normalize_symbol(raw: str) -> str:
     s = raw.strip().upper()
-    # Priority: 6-digit CN stock code
+    # Priority 1: Hong Kong stocks (e.g. 0700.HK)
+    hk = re.search(r"(\d{4,5})\.HK", s)
+    if hk:
+        return f"{hk.group(1)}.HK"
+    # Priority 2: 6-digit CN stock code
     m = re.search(r"(\d{6})(?:\.(SH|SZ|SS))?", s)
     if m:
         code = m.group(1)
@@ -2269,12 +2273,17 @@ def _extract_symbol_and_date(text: str) -> tuple[Optional[str], Optional[str]]:
     date_match = re.search(r"\d{4}-\d{2}-\d{2}", text)
     date = date_match.group(0) if date_match else None
 
-    # Priority 1: A-Share 6-digit code (even if stuck to Chinese characters)
+    # Priority 1: Hong Kong stocks (e.g. 0700.HK, 9988.HK)
+    hk_match = re.search(r"(\d{4,5}\.HK)", text, re.IGNORECASE)
+    if hk_match:
+        return hk_match.group(1).upper(), date
+
+    # Priority 2: A-Share 6-digit code (even if stuck to Chinese characters)
     sym_match = re.search(r"(\d{6}(?:\.(?:SH|SZ|SS))?)", text, re.IGNORECASE)
     if sym_match:
         return _normalize_symbol(sym_match.group(1)), date
 
-    # Priority 2: US Stocks or other Tickers (use boundaries for letters to avoid partial words)
+    # Priority 3: US Stocks or other Tickers (use boundaries for letters to avoid partial words)
     us_match = re.search(r"\b([A-Z]{1,6}(?:\.[A-Z]{1,3})?)\b", text.upper())
     if us_match:
         return us_match.group(1), date
@@ -2793,7 +2802,7 @@ async def _ai_extract_symbol_and_date_streaming(
         prompt = f"""你是金融数据助手。从用户消息中提取以下字段并以 JSON 输出。
 
 字段说明：
-- stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"AAPL"）；美股直接填 ticker。
+- stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"0700.HK"、"AAPL"）；美股/港股直接填 ticker。
 - date：YYYY-MM-DD 格式。今天是 {today}，如未提及则填今天。
 - horizons：分析周期，只能选一个：
   * 用户明确提到"中线/中期/几个月/季度/长期/趋势投资"→ ["medium"]
@@ -2856,7 +2865,8 @@ async def _ai_extract_symbol_and_date_streaming(
         return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     _log(f"[StockExtract] extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
-    if re.match(r"^\d{6}$", llm_name) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
+    # Support A-share 6-digit, HK stocks (e.g. 0700.HK), and US tickers (e.g. AAPL)
+    if re.match(r"^\d{6}$", llm_name) or re.match(r"^\d{4,5}\.HK$", llm_name, re.IGNORECASE) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
         symbol = _normalize_symbol(llm_name)
         return symbol or None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
@@ -2900,7 +2910,7 @@ def _ai_extract_symbol_and_date(
         prompt = f"""你是金融数据助手。从用户消息中提取以下字段并以 JSON 输出。
 
 字段说明：
-- stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"AAPL"）；美股直接填 ticker。
+- stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"0700.HK"、"AAPL"）；美股/港股直接填 ticker。
 - date：YYYY-MM-DD 格式。今天是 {today}，如未提及则填今天。
 - horizons：分析周期，只能选一个：
   * 用户明确提到"中线/中期/几个月/季度/长期/趋势投资"→ ["medium"]
@@ -2954,7 +2964,8 @@ def _ai_extract_symbol_and_date(
     _log(f"[StockExtract] LLM extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
 
     # ── Step 2: If looks like a direct code (digits / letters), normalize it ──
-    if re.match(r"^\d{6}$", llm_name) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
+    # Support A-share 6-digit, HK stocks (e.g. 0700.HK), and US tickers (e.g. AAPL)
+    if re.match(r"^\d{6}$", llm_name) or re.match(r"^\d{4,5}\.HK$", llm_name, re.IGNORECASE) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
         symbol = _normalize_symbol(llm_name)
         _log(f"[StockExtract] Direct code: {symbol}")
         return symbol or None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context

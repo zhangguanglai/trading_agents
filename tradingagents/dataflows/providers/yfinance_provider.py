@@ -21,6 +21,9 @@ class YFinanceProvider(BaseMarketDataProvider):
         # yfinance uses .SS for Shanghai and .SZ for Shenzhen.
         if s.endswith(".SH"):
             return s[:-3] + ".SS"
+        # Hong Kong stocks: yfinance uses .HK suffix directly
+        if s.endswith(".HK"):
+            return s
         return s
 
     def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:

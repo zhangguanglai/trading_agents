@@ -86,9 +86,17 @@ def get_vendor(category: str, method: str = None) -> str:
     return config.get("data_vendors", {}).get(category, "yfinance")
 
 
-def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
+def _resolve_vendor_chain(method: str, configured_vendor: str, symbol: str = None) -> list[str]:
     configured = [v.strip() for v in configured_vendor.split(",") if v.strip()]
     fallback = configured.copy()
+
+    # Hong Kong stocks: prioritize yfinance since cn_* providers only support A-share
+    if symbol and symbol.strip().upper().endswith(".HK"):
+        if "yfinance" not in fallback:
+            fallback.insert(0, "yfinance")
+        else:
+            fallback.remove("yfinance")
+            fallback.insert(0, "yfinance")
 
     for provider_name in _registry.list_names():
         if provider_name not in fallback:
@@ -101,7 +109,9 @@ def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to provider implementations with fallback support."""
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
-    fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+    # Extract symbol from args/kwargs for HK stock detection
+    symbol = kwargs.get("symbol") or kwargs.get("ticker") or (args[0] if args else None)
+    fallback_vendors = _resolve_vendor_chain(method, vendor_config, symbol)
     last_exc = None
     _trace(
         f"method={method} category={category} configured='{vendor_config}' "
