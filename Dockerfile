@@ -39,9 +39,14 @@ EXPOSE 8000
 ARG VERSION=dev
 ENV APP_VERSION=${VERSION}
 
+# 创建数据目录用于SQLite持久化存储（Railway Volume会挂载到此目录）
+RUN mkdir -p /app/data
+
 # 环境变量设置
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
+# 生产环境使用 /app/data 目录存储SQLite数据库，配合Railway Volume实现持久化
+ENV DATABASE_URL=sqlite:///./data/tradingagents.db
 
 # 启动命令
 CMD ["uv", "run", "--no-sync", "tradingagents-api"]
