@@ -120,7 +120,7 @@ class InMemoryJobStore:
                 q.put_nowait(payload)
 
     async def subscribe(
-        self, job_id: str, *, poll_interval: float = 15.0
+        self, job_id: str, *, poll_interval: float = 8.0
     ) -> AsyncIterator[Dict[str, Any]]:
         """Async generator yielding events for *job_id*.
 

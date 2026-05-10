@@ -303,7 +303,7 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "600"))  # seconds
+_JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "900"))  # seconds
 def _create_tracked_task(coro, *, label: str = "Background task") -> asyncio.Task:
     """Create an asyncio task and keep a reference to prevent GC.
     Also logs unhandled exceptions via a done callback."""
@@ -471,7 +471,7 @@ FIXED_TEAMS = {
     "Risk Management": ["Aggressive Analyst", "Neutral Analyst", "Conservative Analyst"],
     "Portfolio Management": ["Portfolio Manager"],
 }
-ANALYST_ORDER = ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"]
+ANALYST_ORDER = ["market", "news", "fundamentals", "macro", "smart_money"]
 ANALYST_AGENT_NAMES = {
     "market": "Market Analyst",
     "social": "Social Analyst",
@@ -554,7 +554,7 @@ class AnalyzeRequest(UserContextInput):
     symbol: str = Field(default="", description="股票代码，如 600519.SH（当 query 包含代码时可省略）")
     trade_date: str = Field(default_factory=cn_today_str, description="交易日期 YYYY-MM-DD")
     selected_analysts: List[str] = Field(
-        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"]
+        default_factory=lambda: ["market", "news", "fundamentals", "macro", "smart_money"]
     )
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
@@ -614,7 +614,7 @@ class ChatCompletionRequest(UserContextInput):
     messages: List[ChatMessage]
     stream: bool = True
     selected_analysts: List[str] = Field(
-        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"]
+        default_factory=lambda: ["market", "news", "fundamentals", "macro", "smart_money"]
     )
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
@@ -786,7 +786,7 @@ class UserRuntimeConfigResponse(BaseModel):
     server_fallback_enabled: bool = True
     email_report_enabled: bool = True
     wecom_report_enabled: bool = True
-    default_analysts: List[str] = Field(default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"])
+    default_analysts: List[str] = Field(default_factory=lambda: ["market", "news", "fundamentals", "macro", "smart_money"])
 
 
 class UserRuntimeConfigUpdateRequest(BaseModel):
@@ -2465,26 +2465,14 @@ async def _stream_job_events(job_id: str):
     store = get_job_store()
     yield _sse_pack("job.ready", {"job_id": job_id})
     try:
-        # 心跳任务：每 30 秒发送一次 keep-alive 注释行，防止连接被代理/浏览器关闭
-        heartbeat_interval = 30.0
-        last_event_time = asyncio.get_event_loop().time()
-        heartbeat_sent = False
-
+        # JobStore.subscribe 已内置 ping 心跳（默认 8 秒一次），
+        # 可保持连接活跃，防止代理/浏览器在长时间无业务事件时断开。
         async for event in store.subscribe(job_id):
             evt_name = event["event"]
             yield _sse_pack(evt_name, event["data"])
-            last_event_time = asyncio.get_event_loop().time()
-            heartbeat_sent = False
             if evt_name in ("job.completed", "job.failed"):
                 yield "event: done\ndata: [DONE]\n\n"
                 return
-
-            # 如果距离上次事件超过心跳间隔，发送心跳
-            now = asyncio.get_event_loop().time()
-            if now - last_event_time >= heartbeat_interval and not heartbeat_sent:
-                yield ":heartbeat\n\n"
-                heartbeat_sent = True
-                last_event_time = now
     except asyncio.CancelledError:
         # Client disconnected (e.g., browser closed or network timeout)
         # This is normal for long-running SSE streams, no need to crash
@@ -3648,7 +3636,7 @@ def _config_response_for_user(user: Optional[UserDB], db: Session) -> UserRuntim
         server_fallback_enabled=bool(cfg.get("server_fallback_enabled", True)),
         email_report_enabled=user.email_report_enabled if user and hasattr(user, 'email_report_enabled') else True,
         wecom_report_enabled=user.wecom_report_enabled if user and hasattr(user, "wecom_report_enabled") else True,
-        default_analysts=json.loads(user_cfg.default_analysts) if user_cfg and user_cfg.default_analysts else ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"],
+        default_analysts=json.loads(user_cfg.default_analysts) if user_cfg and user_cfg.default_analysts else ["market", "news", "fundamentals", "macro", "smart_money"],
     )
 
 
@@ -4565,6 +4553,6 @@ def run() -> None:
         port=8000,
         reload=False,
         log_config=log_config,
-        timeout_keep_alive=600,       # 10分钟，匹配分析总耗时
+        timeout_keep_alive=900,       # 15分钟，匹配分析总耗时
         timeout_graceful_shutdown=30,
     )

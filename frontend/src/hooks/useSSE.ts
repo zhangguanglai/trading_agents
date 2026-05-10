@@ -3,10 +3,16 @@ import { useAnalysisStore } from '@/stores/analysisStore'
 import type { AnalysisReport, RiskItem, KeyMetric } from '@/types'
 import { getBaseUrl } from '@/services/api'
 
+const MAX_RECONNECT_ATTEMPTS = 12
+const BASE_RECONNECT_DELAY_MS = 2000
+
 export function useSSE(jobId: string | null) {
     const eventSourceRef = useRef<EventSource | null>(null)
     const agentMessageMapRef = useRef<Record<string, string>>({})
     const firstTokenMapRef = useRef<Record<string, boolean>>({})
+    const reconnectAttemptsRef = useRef(0)
+    const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const isTerminalRef = useRef(false)
 
     const {
         setIsConnected,
@@ -27,6 +33,7 @@ export function useSSE(jobId: string | null) {
 
     const connect = useCallback(() => {
         if (!jobId || eventSourceRef.current) return
+        if (isTerminalRef.current) return
 
         const url = `${getBaseUrl()}/v1/jobs/${jobId}/events`
         const eventSource = new EventSource(url)
@@ -70,6 +77,7 @@ export function useSSE(jobId: string | null) {
                     break
 
                 case 'job.completed':
+                    isTerminalRef.current = true
                     setIsAnalyzing(false)
                     setReport((data.result || null) as AnalysisReport | null)
                     setStructuredData({
@@ -94,6 +102,7 @@ export function useSSE(jobId: string | null) {
                     break
 
                 case 'job.failed':
+                    isTerminalRef.current = true
                     setIsAnalyzing(false)
                     addChatMessage({
                         id: `job-failed-${Date.now()}`,
@@ -167,6 +176,7 @@ export function useSSE(jobId: string | null) {
         }
 
         eventSource.onopen = () => {
+            reconnectAttemptsRef.current = 0
             setIsConnected(true)
             addLog({
                 id: Date.now().toString(),
@@ -212,6 +222,11 @@ export function useSSE(jobId: string | null) {
         eventSource.onerror = (error) => {
             console.error('SSE error:', error)
             setIsConnected(false)
+            if (isTerminalRef.current) {
+                eventSource.close()
+                eventSourceRef.current = null
+                return
+            }
             addLog({
                 id: Date.now().toString(),
                 timestamp: new Date().toISOString(),
@@ -219,15 +234,36 @@ export function useSSE(jobId: string | null) {
                 content: 'Connection error, attempting to reconnect...'
             })
 
-            // Auto reconnect after 3 seconds
-            setTimeout(() => {
-                if (eventSourceRef.current?.readyState === EventSource.CLOSED) {
+            // 指数退避重连，最多重试 MAX_RECONNECT_ATTEMPTS 次
+            reconnectAttemptsRef.current += 1
+            if (reconnectAttemptsRef.current > MAX_RECONNECT_ATTEMPTS) {
+                addLog({
+                    id: Date.now().toString(),
+                    timestamp: new Date().toISOString(),
+                    type: 'error',
+                    content: 'Max reconnection attempts reached. Please refresh the page.'
+                })
+                setIsAnalyzing(false)
+                eventSource.close()
+                eventSourceRef.current = null
+                return
+            }
+
+            const delay = Math.min(
+                BASE_RECONNECT_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current - 1),
+                30000
+            )
+            if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+            reconnectTimerRef.current = setTimeout(() => {
+                if (eventSourceRef.current?.readyState === EventSource.CLOSED && !isTerminalRef.current) {
+                    eventSourceRef.current = null
                     connect()
                 }
-            }, 3000)
+            }, delay)
         }
 
         return () => {
+            if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
             eventSource.close()
             eventSourceRef.current = null
             setIsConnected(false)
@@ -235,6 +271,8 @@ export function useSSE(jobId: string | null) {
     }, [jobId])
 
     useEffect(() => {
+        isTerminalRef.current = false
+        reconnectAttemptsRef.current = 0
         const cleanup = connect()
         return () => {
             cleanup?.()
@@ -242,12 +280,14 @@ export function useSSE(jobId: string | null) {
     }, [connect])
 
     const disconnect = useCallback(() => {
+        isTerminalRef.current = true
+        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
         if (eventSourceRef.current) {
             eventSourceRef.current.close()
             eventSourceRef.current = null
             setIsConnected(false)
         }
-    }, [])
+    }, [setIsConnected])
 
     return { disconnect }
 }

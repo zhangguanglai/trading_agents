@@ -40,7 +40,7 @@ function inferPreset(llmProvider: string, backendUrl: string): string {
 
 export default function Settings() {
     const { user } = useAuthStore()
-    const [defaultAnalysts, setDefaultAnalysts] = useState(['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money', 'volume_price'])
+    const [defaultAnalysts, setDefaultAnalysts] = useState(['market', 'news', 'fundamentals', 'macro', 'smart_money'])
     const [customPrompt, setCustomPrompt] = useState('')
     const [llmApiKey, setLlmApiKey] = useState('')
     const [hasStoredApiKey, setHasStoredApiKey] = useState(false)

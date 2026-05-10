@@ -83,7 +83,7 @@ class GraphSetup:
         self.data_collector = data_collector
 
     def setup_graph(
-        self, selected_analysts=["market", "social", "news", "fundamentals", "macro", "smart_money"],
+        self, selected_analysts=["market", "news", "fundamentals", "macro", "smart_money"],
         checkpointer=None
     ):
         """Set up and compile the agent workflow graph.

@@ -142,13 +142,13 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
     const selectedAnalysts = (() => {
         try {
             const stored = localStorage.getItem('tradingagents-settings')
-            if (!stored) return ['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money', 'volume_price']
+            if (!stored) return ['market', 'news', 'fundamentals', 'macro', 'smart_money']
             const parsed = JSON.parse(stored) as { defaultAnalysts?: string[] }
             if (Array.isArray(parsed.defaultAnalysts) && parsed.defaultAnalysts.length > 0) {
                 return parsed.defaultAnalysts
             }
         } catch {}
-        return ['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money', 'volume_price']
+        return ['market', 'news', 'fundamentals', 'macro', 'smart_money']
     })()
     // track which section IDs have been added to chatMessages and whether they're done
     const streamingReportIds = useRef<Map<string, boolean>>(new Map()) // section → isComplete
@@ -560,6 +560,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         const decoder = new TextDecoder()
         let buffer = ''
         let currentEvent = 'message'
+        let receivedTerminal = false
 
         while (true) {
             const { value, done } = await reader.read()
@@ -581,17 +582,21 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
 
                 if (!dataLine) continue
                 if (dataLine === '[DONE]' || currentEvent === 'done') {
+                    receivedTerminal = true
                     setIsConnected(false)
                     setIsAnalyzing(false)
                     return
                 }
-                
+
                 if (currentEvent === 'ping') {
                     continue
                 }
 
                 try {
                     const data = JSON.parse(dataLine) as Record<string, unknown>
+                    if (currentEvent === 'job.completed' || currentEvent === 'job.failed') {
+                        receivedTerminal = true
+                    }
                     parseAndDispatch({ event: currentEvent, data })
                 } catch {
                     console.error('SSE解析失败:', dataLine.slice(0, 120))
@@ -601,6 +606,11 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
 
         setIsConnected(false)
         setIsAnalyzing(false)
+
+        // 如果流正常结束但没有收到终端事件，说明连接可能意外断开
+        if (!receivedTerminal) {
+            throw new Error('SSE stream ended unexpectedly without terminal event')
+        }
     }
 
     const handleSubmit = async (e: FormEvent) => {

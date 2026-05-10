@@ -113,7 +113,7 @@ class RedisJobStore:
         self._r.publish(self._channel_key(job_id), json.dumps(payload, ensure_ascii=False))
 
     async def subscribe(
-        self, job_id: str, *, poll_interval: float = 15.0
+        self, job_id: str, *, poll_interval: float = 8.0
     ) -> AsyncIterator[Dict[str, Any]]:
         """Async generator yielding events for *job_id*.
 
