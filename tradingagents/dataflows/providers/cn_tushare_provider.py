@@ -8,7 +8,7 @@ from .base import BaseMarketDataProvider
 
 
 class CnTushareProvider(BaseMarketDataProvider):
-    """Tushare A-share data provider.
+    """Tushare A-share and Hong Kong stock data provider.
 
     Requires ``tushare`` package and ``TUSHARE_TOKEN`` environment variable.
     """
@@ -35,28 +35,49 @@ class CnTushareProvider(BaseMarketDataProvider):
     def name(self) -> str:
         return "cn_tushare"
 
+    def _is_hk_stock(self, symbol: str) -> bool:
+        """Check if symbol is a Hong Kong stock (e.g. 00700.HK)."""
+        return symbol.strip().upper().endswith(".HK")
+
     def _normalize_symbol(self, symbol: str) -> str:
-        """Convert 600519.SH -> 600519.SH (tushare format)."""
-        if "." in symbol:
-            return symbol
-        # Assume 6-digit code
-        if symbol.startswith("6"):
-            return f"{symbol}.SH"
-        return f"{symbol}.SZ"
+        """Convert to Tushare format.
+
+        A-share: 600519 -> 600519.SH
+        HK: 0700.HK -> 00700.HK (pad to 5 digits)
+        """
+        s = symbol.strip().upper()
+        if s.endswith(".HK"):
+            code = s[:-3]
+            # Tushare HK codes are 5 digits, pad with leading zeros
+            return f"{int(code):05d}.HK"
+        if "." in s:
+            return s
+        # Assume 6-digit A-share code
+        if s.startswith("6"):
+            return f"{s}.SH"
+        return f"{s}.SZ"
 
     def _to_tushare_code(self, symbol: str) -> str:
-        """Convert 600519.SH -> 600519.SH (tushare uses same format)."""
+        """Convert to Tushare ts_code format."""
         return self._normalize_symbol(symbol)
 
     def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
         self._init_ts()
         ts_code = self._to_tushare_code(symbol)
         try:
-            df = self._ts.daily(
-                ts_code=ts_code,
-                start_date=start_date.replace("-", ""),
-                end_date=end_date.replace("-", ""),
-            )
+            if self._is_hk_stock(symbol):
+                # Use hk_daily for Hong Kong stocks
+                df = self._ts.hk_daily(
+                    ts_code=ts_code,
+                    start_date=start_date.replace("-", ""),
+                    end_date=end_date.replace("-", ""),
+                )
+            else:
+                df = self._ts.daily(
+                    ts_code=ts_code,
+                    start_date=start_date.replace("-", ""),
+                    end_date=end_date.replace("-", ""),
+                )
             if df is None or df.empty:
                 return json.dumps({"error": f"No data for {symbol}"})
             # Rename columns to standard format
@@ -86,6 +107,9 @@ class CnTushareProvider(BaseMarketDataProvider):
 
     def get_fundamentals(self, ticker: str, curr_date: str = None) -> str:
         self._init_ts()
+        if self._is_hk_stock(ticker):
+            # HK fundamentals not available via standard daily_basic
+            return json.dumps({"info": "cn_tushare HK fundamentals not available"})
         ts_code = self._to_tushare_code(ticker)
         try:
             df = self._ts.daily_basic(ts_code=ts_code, trade_date=curr_date.replace("-", "") if curr_date else None)
@@ -99,6 +123,8 @@ class CnTushareProvider(BaseMarketDataProvider):
         self, ticker: str, freq: str = "quarterly", curr_date: str = None
     ) -> str:
         self._init_ts()
+        if self._is_hk_stock(ticker):
+            return json.dumps({"info": "cn_tushare HK balance sheet not available"})
         ts_code = self._to_tushare_code(ticker)
         try:
             df = self._ts.balancesheet(ts_code=ts_code)
@@ -112,6 +138,8 @@ class CnTushareProvider(BaseMarketDataProvider):
         self, ticker: str, freq: str = "quarterly", curr_date: str = None
     ) -> str:
         self._init_ts()
+        if self._is_hk_stock(ticker):
+            return json.dumps({"info": "cn_tushare HK cashflow not available"})
         ts_code = self._to_tushare_code(ticker)
         try:
             df = self._ts.cashflow(ts_code=ts_code)
@@ -125,6 +153,8 @@ class CnTushareProvider(BaseMarketDataProvider):
         self, ticker: str, freq: str = "quarterly", curr_date: str = None
     ) -> str:
         self._init_ts()
+        if self._is_hk_stock(ticker):
+            return json.dumps({"info": "cn_tushare HK income statement not available"})
         ts_code = self._to_tushare_code(ticker)
         try:
             df = self._ts.income(ts_code=ts_code)
@@ -147,6 +177,8 @@ class CnTushareProvider(BaseMarketDataProvider):
 
     def get_insider_transactions(self, symbol: str) -> str:
         self._init_ts()
+        if self._is_hk_stock(symbol):
+            return json.dumps({"info": "cn_tushare HK insider transactions not available"})
         ts_code = self._to_tushare_code(symbol)
         try:
             df = self._ts.stk_holdertrade(ts_code=ts_code)
@@ -162,7 +194,10 @@ class CnTushareProvider(BaseMarketDataProvider):
         for symbol in symbols:
             ts_code = self._to_tushare_code(symbol)
             try:
-                df = self._ts.daily(ts_code=ts_code, limit=1)
+                if self._is_hk_stock(symbol):
+                    df = self._ts.hk_daily(ts_code=ts_code, limit=1)
+                else:
+                    df = self._ts.daily(ts_code=ts_code, limit=1)
                 if df is not None and not df.empty:
                     row = df.iloc[0]
                     result[symbol] = {
