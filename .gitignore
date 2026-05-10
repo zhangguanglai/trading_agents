@@ -1,5 +1,5 @@
 # Docs (local design/plan documents)
-docs/
+# docs/  # Commented out to allow architecture and PRD docs
 
 # LangGraph Checkpoints
 graph_checkpoints.db
