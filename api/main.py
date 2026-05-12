@@ -2298,6 +2298,48 @@ def _sse_pack(event: str, data: Dict[str, Any]) -> str:
 def _parse_stock_csv(raw: str) -> List[Dict[str, Any]]:
     if not raw:
         return []
+
+    # Try JSON first (e.g., from Tushare provider)
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list) and data:
+            df = pd.DataFrame(data)
+            # Tushare columns: date, open, high, low, close, volume
+            col_map = {
+                "date": "Date",
+                "open": "Open",
+                "high": "High",
+                "low": "Low",
+                "close": "Close",
+                "volume": "Volume",
+                "amount": "Amount",
+            }
+            df = df.rename(columns=col_map)
+            required = ["Date", "Open", "High", "Low", "Close"]
+            if all(col in df.columns for col in required):
+                for col in ["Open", "High", "Low", "Close", "Volume"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+                df = df.dropna(subset=["Date", "Open", "High", "Low", "Close"]).sort_values("Date")
+                if not df.empty:
+                    candles: List[Dict[str, Any]] = []
+                    for _, row in df.iterrows():
+                        candles.append(
+                            {
+                                "date": row["Date"].strftime("%Y-%m-%d"),
+                                "open": float(row["Open"]),
+                                "high": float(row["High"]),
+                                "low": float(row["Low"]),
+                                "close": float(row["Close"]),
+                                "volume": float(row["Volume"]) if "Volume" in df.columns and pd.notna(row.get("Volume")) else None,
+                            }
+                        )
+                    return candles
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Fallback to CSV parsing (e.g., from AKShare or file)
     lines = [ln for ln in raw.splitlines() if ln.strip() and not ln.startswith("#")]
     if not lines:
         return []
