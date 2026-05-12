@@ -214,3 +214,59 @@ class CnTushareProvider(BaseMarketDataProvider):
             except Exception:
                 pass
         return json.dumps(result)
+
+    def get_individual_fund_flow(self, symbol: str) -> str:
+        """获取个股近期主力资金净流向（港股暂不支持）。"""
+        if self._is_hk_stock(symbol):
+            return f"{symbol} 为港股标的，Tushare 暂不提供港股资金流向数据。"
+        self._init_ts()
+        ts_code = self._to_tushare_code(symbol)
+        try:
+            # Tushare 没有直接的资金流向接口，使用 moneyflow 替代
+            df = self._ts.moneyflow(ts_code=ts_code)
+            if df is None or df.empty:
+                return f"{symbol} 近期主力资金流向数据暂不可用。"
+            df_recent = df.tail(5)
+            return f"{symbol} 近5日主力资金净流向：\n{df_recent.to_string(index=False)}"
+        except Exception as e:
+            return f"个股资金流向数据获取失败：{type(e).__name__}: {e}"
+
+    def get_lhb_detail(self, symbol: str, date: str) -> str:
+        """获取龙虎榜数据（港股暂不支持）。"""
+        if self._is_hk_stock(symbol):
+            return f"{symbol} 为港股标的，港股无龙虎榜机制。"
+        self._init_ts()
+        ts_code = self._to_tushare_code(symbol)
+        try:
+            df = self._ts.top_list(ts_code=ts_code, trade_date=date.replace("-", ""))
+            if df is None or df.empty:
+                return f"{symbol} 在 {date} 无龙虎榜数据（非异动日属正常）。"
+            return f"{symbol} 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
+        except Exception as e:
+            return f"龙虎榜数据获取失败：{type(e).__name__}: {e}"
+
+    def get_board_fund_flow(self) -> str:
+        """获取行业板块资金流向排名。"""
+        self._init_ts()
+        try:
+            df = self._ts.moneyflow_industry()
+            if df is None or df.empty:
+                return "今日板块资金流向数据暂不可用。"
+            return f"行业板块资金流向排名：\n{df.head(20).to_string(index=False)}"
+        except Exception as e:
+            return f"板块资金流向数据获取失败：{type(e).__name__}: {e}"
+
+    def get_zt_pool(self, date: str) -> str:
+        """获取涨停板情绪池。"""
+        self._init_ts()
+        try:
+            df = self._ts.limit_list(trade_date=date.replace("-", ""))
+            if df is None or df.empty:
+                return f"{date} 涨停板数据暂不可用。"
+            return f"涨停板情绪池（{date}）：\n{df.head(30).to_string(index=False)}"
+        except Exception as e:
+            return f"涨停板数据获取失败：{type(e).__name__}: {e}"
+
+    def get_hot_stocks_xq(self) -> str:
+        """获取雪球热搜股票列表（Tushare 暂不支持，返回提示）。"""
+        return "雪球热搜数据暂不可用（Tushare 未提供该接口）。"
