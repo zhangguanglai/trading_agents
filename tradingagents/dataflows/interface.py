@@ -97,6 +97,21 @@ def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
     return fallback
 
 
+# A-share specific methods that are not available for HK stocks
+_CN_MARKET_ONLY_METHODS = {
+    "get_individual_fund_flow",
+    "get_lhb_detail",
+    "get_board_fund_flow",
+    "get_zt_pool",
+    "get_hot_stocks_xq",
+}
+
+
+def _is_hk_stock(symbol: str) -> bool:
+    """Check if symbol is a Hong Kong stock."""
+    return symbol and symbol.strip().upper().endswith(".HK")
+
+
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to provider implementations with fallback support."""
     category = get_category_for_method(method)
@@ -107,6 +122,23 @@ def route_to_vendor(method: str, *args, **kwargs):
         f"method={method} category={category} configured='{vendor_config}' "
         f"chain={fallback_vendors}"
     )
+
+    # Check if this is an A-share only method called with HK stock
+    if method in _CN_MARKET_ONLY_METHODS:
+        symbol = kwargs.get("symbol") or (args[0] if args else None)
+        if _is_hk_stock(symbol):
+            _trace(f"method={method} status=skip reason=hk-stock-not-supported")
+            if method == "get_individual_fund_flow":
+                return f"{symbol} 为港股标的，暂无主力资金流向数据（港股无此数据接口）。分析将基于成交量和价量关系进行。"
+            elif method == "get_lhb_detail":
+                return f"{symbol} 为港股标的，港股无龙虎榜机制。"
+            elif method == "get_board_fund_flow":
+                return "港股暂无行业板块资金流向数据。"
+            elif method == "get_zt_pool":
+                return "港股无涨跌停板机制。"
+            elif method == "get_hot_stocks_xq":
+                return "港股暂无雪球热搜数据。"
+            return f"{symbol} 为港股标的，该方法暂不支持港股数据。"
 
     for vendor in fallback_vendors:
         provider = _registry.get(vendor)

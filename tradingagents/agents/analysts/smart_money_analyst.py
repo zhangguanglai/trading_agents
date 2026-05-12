@@ -29,6 +29,9 @@ def create_smart_money_analyst(llm, data_collector=None):
 
         pool = data_collector.get(ticker, current_date) if data_collector else None
 
+        # Detect HK stock and adjust data fetching strategy
+        is_hk = ticker.strip().upper().endswith(".HK")
+
         if pool is not None:
             fund_flow = pool.get("fund_flow_individual", "无数据")
             lhb = pool.get("lhb", "无数据")
@@ -38,21 +41,31 @@ def create_smart_money_analyst(llm, data_collector=None):
                 get_individual_fund_flow, get_lhb_detail, get_indicators,
             )
             
-            # Parallelize fallback fetches
-            results = await asyncio.gather(
-                _safe(get_individual_fund_flow, {"symbol": ticker}),
-                _safe(get_lhb_detail, {"symbol": ticker, "date": current_date}),
-                _safe(get_indicators, {
+            if is_hk:
+                # HK stocks: skip fund_flow and lhb (not available), keep volume
+                fund_flow = "港股暂无主力资金流向数据（Tushare未提供港股资金流向接口）。分析将基于成交量和价量关系进行。"
+                lhb = "港股无龙虎榜机制。"
+                volume = await _safe(get_indicators, {
                     "symbol": ticker, "indicator": "volume",
                     "curr_date": current_date, "look_back_days": 20,
                 })
-            )
-            fund_flow, lhb, volume = results
+            else:
+                # A-share: full data fetch
+                results = await asyncio.gather(
+                    _safe(get_individual_fund_flow, {"symbol": ticker}),
+                    _safe(get_lhb_detail, {"symbol": ticker, "date": current_date}),
+                    _safe(get_indicators, {
+                        "symbol": ticker, "indicator": "volume",
+                        "curr_date": current_date, "look_back_days": 20,
+                    })
+                )
+                fund_flow, lhb, volume = results
 
         messages = [
             SystemMessage(content=(
                 system_message
                 + "\n\n请严格基于提供的量化数据输出分析，全程使用中文。"
+                + ("\n注意：港股分析缺少主力资金流向和龙虎榜数据，请重点基于成交量、价量关系、换手率等指标进行分析。" if is_hk else "")
             )),
             HumanMessage(content=(
                 horizon_ctx + "\n"
