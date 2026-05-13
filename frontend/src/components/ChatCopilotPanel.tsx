@@ -190,54 +190,71 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         const { currentJobId } = useAnalysisStore.getState()
         if (!currentJobId) return false
 
-        pushSystem(`分析流中断，正在回查任务状态：${currentJobId}`)
+        pushSystem(`⏳ 分析仍在后台运行，正在持续回查任务状态...`)
 
-        for (let attempt = 0; attempt < 8; attempt += 1) {
-            const status = await api.getJobStatus(currentJobId)
+        // 优化：延长轮询时间，从 8次/12秒 提升到 60次/120秒
+        // 分析通常需要 5-15 分钟，给足回查时间
+        const maxAttempts = 60
+        const pollInterval = 2000 // 2秒
 
-            if (status.status === 'completed') {
-                const result = await api.getJobResult(currentJobId)
-                setReport(result.result)
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            try {
+                const status = await api.getJobStatus(currentJobId)
 
-                const symbol = result.result.symbol
-                const tradeDate = result.result.trade_date
-                if (symbol) {
-                    setCurrentSymbol(symbol)
-                    onSymbolDetected(symbol)
-                }
+                if (status.status === 'completed') {
+                    const result = await api.getJobResult(currentJobId)
+                    setReport(result.result)
 
-                try {
-                    const history = await api.getReports(symbol, 0, 10)
-                    const matched = history.reports.find((item: Report) => item.trade_date === tradeDate) ?? history.reports[0]
-                    if (matched) {
-                        setStructuredData({
-                            riskItems: matched.risk_items,
-                            keyMetrics: matched.key_metrics,
-                            confidence: matched.confidence,
-                            targetPrice: matched.target_price,
-                            stopLoss: matched.stop_loss_price,
-                        })
+                    const symbol = result.result.symbol
+                    const tradeDate = result.result.trade_date
+                    if (symbol) {
+                        setCurrentSymbol(symbol)
+                        onSymbolDetected(symbol)
                     }
-                } catch {
-                    // 历史报告回填失败时，至少保留主报告正文
+
+                    try {
+                        const history = await api.getReports(symbol, 0, 10)
+                        const matched = history.reports.find((item: Report) => item.trade_date === tradeDate) ?? history.reports[0]
+                        if (matched) {
+                            setStructuredData({
+                                riskItems: matched.risk_items,
+                                keyMetrics: matched.key_metrics,
+                                confidence: matched.confidence,
+                                targetPrice: matched.target_price,
+                                stopLoss: matched.stop_loss_price,
+                            })
+                        }
+                    } catch {
+                        // 历史报告回填失败时，至少保留主报告正文
+                    }
+
+                    pushAssistant(
+                        `**✅ 分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.direction || '未知')}**\n\n执行动作：**${String(result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
+                    )
+                    setAnalysisRunState('completed')
+                    return true
                 }
 
-                pushAssistant(
-                    `**分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.direction || '未知')}**\n\n执行动作：**${String(result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
-                )
-                setAnalysisRunState('completed')
-                return true
+                if (status.status === 'failed') {
+                    pushAssistant(`❌ 分析失败：${status.error || 'unknown error'}`)
+                    setAnalysisRunState('failed', status.error || 'unknown error')
+                    return true
+                }
+
+                // 每 15 秒给用户一次进度提示
+                if (attempt > 0 && attempt % 7 === 0) {
+                    pushSystem(`⏳ 分析仍在进行中（已等待 ${Math.round(attempt * pollInterval / 1000)} 秒），请稍候...`)
+                }
+            } catch (pollError) {
+                // 轮询请求本身失败，继续尝试
+                console.warn('Job status poll failed:', pollError)
             }
 
-            if (status.status === 'failed') {
-                pushAssistant(`分析失败：${status.error || 'unknown error'}`)
-                setAnalysisRunState('failed', status.error || 'unknown error')
-                return true
-            }
-
-            await sleep(1500)
+            await sleep(pollInterval)
         }
 
+        // 120 秒后仍未完成，提示用户稍后查看
+        pushSystem(`📝 分析任务仍在后台运行中。您可以稍后到「历史报告」页面查看完整结果。`)
         return false
     }
 

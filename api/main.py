@@ -223,12 +223,8 @@ async def lifespan(app: FastAPI):
     from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates
     _load_cn_trade_dates()
     _log("Trade calendar pre-loaded.")
-    # Pre-load stock + ETF name map (with timeout to avoid blocking startup)
-    try:
-        await asyncio.wait_for(asyncio.to_thread(_load_cn_stock_map), timeout=30.0)
-        _log("Stock map pre-loaded on startup.")
-    except asyncio.TimeoutError:
-        _log("[StockMap] Pre-load timed out after 30s, will lazy-load on first use.")
+    # Stock map is now lazy-loaded with local cache, no need to pre-load on startup
+    _log("Stock map will be lazy-loaded from local cache on first use.")
     yield
     _log("Shutting down: Cleaning up resources...")
     _executor.shutdown(wait=True)
@@ -269,7 +265,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_executor = ThreadPoolExecutor(max_workers=int(os.getenv("TA_MAX_WORKERS", "2")))
+_executor = ThreadPoolExecutor(max_workers=int(os.getenv("TA_MAX_WORKERS", "4")))
 
 # ── Singleton job store (in-memory or Redis depending on REDIS_URL) ─────────
 _job_store_instance: Optional[Any] = None
@@ -343,6 +339,8 @@ def _load_cn_stock_map() -> Dict[str, str]:
 
     Uses akshare stock_info_a_code_name (static list, no anti-crawl) for A-shares,
     plus fund_name_em for ETFs/funds.
+    
+    Optimized: loads from local cache file first, falls back to AKShare only on cache miss.
     """
     global _cn_stock_map, _cn_stock_reverse_map, _cn_stock_map_loaded_at
     import time as _time
@@ -355,7 +353,28 @@ def _load_cn_stock_map() -> Dict[str, str]:
     with _cn_stock_map_lock:
         if _cn_stock_map is not None and (now - _cn_stock_map_loaded_at) <= _STOCK_MAP_TTL:
             return _cn_stock_map
+        
         result: Dict[str, str] = {}
+        cache_file = os.path.join(os.path.dirname(__file__), "..", "data", "stock_map_cache.json")
+        cache_file = os.path.abspath(cache_file)
+        
+        # 1. Try loading from local cache file first (fast, no network)
+        try:
+            if os.path.exists(cache_file):
+                file_mtime = os.path.getmtime(cache_file)
+                if (now - file_mtime) <= _STOCK_MAP_TTL:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        cached = json.load(f)
+                    result = cached.get("map", {})
+                    _cn_stock_map = result
+                    _cn_stock_reverse_map = {code: name for name, code in result.items()}
+                    _cn_stock_map_loaded_at = now
+                    _log(f"[StockMap] Loaded {len(result)} entries from local cache ({cache_file}).")
+                    return result
+        except Exception as ce:
+            _log(f"[StockMap] Cache load failed: {ce}")
+        
+        # 2. Fallback to AKShare (slow, network-dependent)
         try:
             import akshare as ak
             # A-share stocks (static list, no anti-crawl issue)
@@ -382,10 +401,19 @@ def _load_cn_stock_map() -> Dict[str, str]:
                 fund_count = len(result) - stock_count
             except Exception as fe:
                 _log(f"[StockMap] ETF/fund load skipped: {fe}")
+            
+            # Save to local cache file for next time
+            try:
+                os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    json.dump({"map": result, "loaded_at": now}, f, ensure_ascii=False)
+            except Exception as se:
+                _log(f"[StockMap] Cache save failed: {se}")
+            
             _cn_stock_map = result
             _cn_stock_reverse_map = {code: name for name, code in result.items()}
             _cn_stock_map_loaded_at = now
-            _log(f"[StockMap] Loaded {stock_count} stocks + {fund_count} ETFs/funds = {len(result)} total.")
+            _log(f"[StockMap] Loaded {stock_count} stocks + {fund_count} ETFs/funds = {len(result)} total from AKShare.")
         except Exception as e:
             _log(f"[StockMap] Failed to load: {e}")
             if _cn_stock_map is None:
@@ -553,8 +581,9 @@ class UserContextInput(BaseModel):
 class AnalyzeRequest(UserContextInput):
     symbol: str = Field(default="", description="股票代码，如 600519.SH（当 query 包含代码时可省略）")
     trade_date: str = Field(default_factory=cn_today_str, description="交易日期 YYYY-MM-DD")
+    # 优化：默认减少分析师数量以提升响应速度（核心3个：市场+新闻+基本面）
     selected_analysts: List[str] = Field(
-        default_factory=lambda: ["market", "news", "fundamentals", "macro", "smart_money"]
+        default_factory=lambda: ["market", "news", "fundamentals"]
     )
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
@@ -613,8 +642,9 @@ class ChatCompletionRequest(UserContextInput):
     model: Optional[str] = "tradingagents-ashare"
     messages: List[ChatMessage]
     stream: bool = True
+    # 优化：默认减少分析师数量以提升响应速度（核心3个：市场+新闻+基本面）
     selected_analysts: List[str] = Field(
-        default_factory=lambda: ["market", "news", "fundamentals", "macro", "smart_money"]
+        default_factory=lambda: ["market", "news", "fundamentals"]
     )
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
@@ -786,7 +816,8 @@ class UserRuntimeConfigResponse(BaseModel):
     server_fallback_enabled: bool = True
     email_report_enabled: bool = True
     wecom_report_enabled: bool = True
-    default_analysts: List[str] = Field(default_factory=lambda: ["market", "news", "fundamentals", "macro", "smart_money"])
+    # 优化：默认减少分析师数量以提升响应速度（核心3个：市场+新闻+基本面）
+    default_analysts: List[str] = Field(default_factory=lambda: ["market", "news", "fundamentals"])
 
 
 class UserRuntimeConfigUpdateRequest(BaseModel):
@@ -1203,16 +1234,44 @@ class AgentProgressTracker:
 
     def _emit_report_chunked(self, job_id: str, section: str, content: str) -> None:
         """将报告内容分片发送，直接透传不做人工延迟
-        
+
         按较大块分片（如按段落），让前端自然渲染
+        优化：短内容（<800字符）直接整段发送，避免过度分片
         """
+        # 短内容直接整段发送，减少事件数量
+        if len(content) < 800:
+            if content.strip():
+                _emit_job_event(
+                    job_id,
+                    "agent.report.chunk",
+                    {
+                        "section": section,
+                        "chunk": content,
+                        "index": 0,
+                        "is_complete": False,
+                        "horizon": self.horizon,
+                    },
+                )
+            _emit_job_event(
+                job_id,
+                "agent.report.chunk",
+                {
+                    "section": section,
+                    "chunk": "",
+                    "index": -1,
+                    "is_complete": True,
+                    "horizon": self.horizon,
+                },
+            )
+            return
+
         # 按段落分割，保持Markdown结构
         paragraphs = content.split('\n\n')
-        
+
         for i, para in enumerate(paragraphs):
             if not para.strip():
                 continue
-                
+
             _emit_job_event(
                 job_id,
                 "agent.report.chunk",
@@ -1224,7 +1283,7 @@ class AgentProgressTracker:
                     "horizon": self.horizon,
                 },
             )
-        
+
         # 发送完成标记
         _emit_job_event(
             job_id,
@@ -1676,7 +1735,7 @@ async def _run_job_inner(
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(graph.data_collector.collect, ticker, request.trade_date, horizons=request.horizons),
-                    timeout=120.0  # 2分钟数据采集超时
+                    timeout=60.0  # 1分钟数据采集超时（生产环境优化）
                 )
             except asyncio.TimeoutError:
                 _log(f"[Checkpoint] Job {job_id}: data collection timed out after 120s, continuing with partial data")
@@ -1747,9 +1806,24 @@ async def _run_job_inner(
                 chunk_count = 0
 
                 # DB 更新使用短生命周期 session，避免长期占用连接池
+                # 优化：批量聚合DB更新，每2秒或累计≥5个字段才写一次，减少线程池压力
+                _pending_db_updates: Dict[str, str] = {}
+                _last_db_flush = time.time()
+
                 def _horizon_partial_update(updates: dict):
                     with get_db_ctx() as _hdb:
                         report_service.update_report_partial(_hdb, job_id, **updates)
+
+                def _flush_horizon_db():
+                    nonlocal _pending_db_updates, _last_db_flush
+                    if not _pending_db_updates:
+                        return
+                    try:
+                        _horizon_partial_update(dict(_pending_db_updates))
+                    except Exception as _flush_err:
+                        logger.warning(f"[Job {job_id}] DB flush failed (non-fatal): {_flush_err}")
+                    _pending_db_updates.clear()
+                    _last_db_flush = time.time()
 
                 # 通过 ContextVar 将 tracker 传入 async 节点（LangGraph 不传递 schema 外的字段）
                 _tracker_token = current_tracker_var.set(h_tracker)
@@ -1805,7 +1879,7 @@ async def _run_job_inner(
                                 h_tracker._set_status(ANALYST_AGENT_NAMES[r_key], "completed")
                         # ── end 并行感知 ────────────────────────────────────────────
 
-                        # 报告分片推送与数据库即时更新
+                        # 报告分片推送与数据库批量更新（优化：聚合写DB，减少线程池竞争）
                         db_updates = {}
                         for key in report_keys:
                             value = chunk.get(key)
@@ -1815,7 +1889,12 @@ async def _run_job_inner(
                                 h_tracker._emit_report_chunked(job_id, key, str(value))
 
                         if db_updates:
-                            await asyncio.to_thread(_horizon_partial_update, db_updates)
+                            _pending_db_updates.update(db_updates)
+                            # 触发条件：累计≥5个字段 或 距上次flush≥2秒
+                            if (len(_pending_db_updates) >= 5 or (time.time() - _last_db_flush) >= 2.0):
+                                _flush_horizon_db()
+                    # 循环结束：强制flush剩余更新
+                    _flush_horizon_db()
                 except Exception as e:
                     logger.error(
                         f"[Checkpoint] Job {job_id}: horizon '{horizon}' astream FAILED "
@@ -1987,6 +2066,22 @@ async def _run_job_inner(
             last_report: Dict[str, str] = {}
             seen: Dict[str, bool] = {}
 
+            # 优化：批量聚合DB更新，减少线程池竞争
+            _pending_db_updates_single: Dict[str, str] = {}
+            _last_db_flush_single = time.time()
+
+            def _flush_single_db():
+                nonlocal _pending_db_updates_single, _last_db_flush_single
+                if not _pending_db_updates_single:
+                    return
+                try:
+                    with get_db_ctx() as _db:
+                        report_service.update_report_partial(_db, job_id, **_pending_db_updates_single)
+                except Exception as _flush_err:
+                    logger.warning(f"[Job {job_id}] single-horizon DB flush failed (non-fatal): {_flush_err}")
+                _pending_db_updates_single.clear()
+                _last_db_flush_single = time.time()
+
             _tracker_token = current_tracker_var.set(tracker)
             _log(f"[Checkpoint] Job {job_id}: entering single-horizon astream loop (stream_events=True)")
             _stream_chunk_count = 0
@@ -2045,53 +2140,55 @@ async def _run_job_inner(
                             db_updates[key] = str(value)
                             # 立即推送报告分片，前端即可“即产即看”
                             tracker._emit_report_chunked(job_id, key, str(value))
-                    
+
                     if db_updates:
-                        def _partial_update(updates=db_updates):
-                            with get_db_ctx() as _db:
-                                report_service.update_report_partial(_db, job_id, **updates)
-                        await asyncio.to_thread(_partial_update)
-                    
-                    # ── Message & Tool Call Handling ──
-                    messages = chunk.get("messages", [])
-                    if messages:
-                        msg = messages[-1]
-                        content = _extract_message_text(getattr(msg, "content", ""))
-                        agent_name = getattr(msg, "name", None)
+                        _pending_db_updates_single.update(db_updates)
+                        # 触发条件：累计≥5个字段 或 距上次flush≥2秒
+                        if (len(_pending_db_updates_single) >= 5 or (time.time() - _last_db_flush_single) >= 2.0):
+                            _flush_single_db()
+                # 循环结束：强制flush剩余更新
+                _flush_single_db()
 
-                        if content:
-                            _log(f"[Agent Message] {agent_name}: {content[:200]}...")
+                # ── Message & Tool Call Handling ──
+                messages = chunk.get("messages", [])
+                if messages:
+                    msg = messages[-1]
+                    content = _extract_message_text(getattr(msg, "content", ""))
+                    agent_name = getattr(msg, "name", None)
 
-                        for tool_call in getattr(msg, "tool_calls", []) or []:
-                            tool_name = tool_call.get("name", "unknown") if isinstance(tool_call, dict) else getattr(tool_call, "name", "unknown")
-                            tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
-                            _log(f"[Tool Call] {agent_name}: {tool_name}")
+                    if content:
+                        _log(f"[Agent Message] {agent_name}: {content[:200]}...")
 
-                            agent_display = agent_name
-                            if not agent_display:
-                                tool_to_agent = {
-                                    "get_stock_data": "数据获取",
-                                    "get_indicators": "技术分析师",
-                                    "get_fundamentals": "基本面分析师",
-                                    "get_income_statement": "基本面分析师",
-                                    "get_balance_sheet": "基本面分析师",
-                                    "get_cash_flow": "基本面分析师",
-                                    "get_news": "新闻分析师",
-                                    "get_social_sentiment": "舆情分析师",
-                                }
-                                agent_display = tool_to_agent.get(tool_name, "系统")
+                    for tool_call in getattr(msg, "tool_calls", []) or []:
+                        tool_name = tool_call.get("name", "unknown") if isinstance(tool_call, dict) else getattr(tool_call, "name", "unknown")
+                        tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
+                        _log(f"[Tool Call] {agent_name}: {tool_name}")
 
-                            tool_description = _generate_tool_description(tool_name, tool_args)
-                            _emit_job_event(
-                                job_id,
-                                "agent.tool_call",
-                                {
-                                    "agent": agent_display,
-                                    "tool": tool_name,
-                                    "description": tool_description,
-                                },
-                            )
-                
+                        agent_display = agent_name
+                        if not agent_display:
+                            tool_to_agent = {
+                                "get_stock_data": "数据获取",
+                                "get_indicators": "技术分析师",
+                                "get_fundamentals": "基本面分析师",
+                                "get_income_statement": "基本面分析师",
+                                "get_balance_sheet": "基本面分析师",
+                                "get_cash_flow": "基本面分析师",
+                                "get_news": "新闻分析师",
+                                "get_social_sentiment": "舆情分析师",
+                            }
+                            agent_display = tool_to_agent.get(tool_name, "系统")
+
+                        tool_description = _generate_tool_description(tool_name, tool_args)
+                        _emit_job_event(
+                            job_id,
+                            "agent.tool_call",
+                            {
+                                "agent": agent_display,
+                                "tool": tool_name,
+                                "description": tool_description,
+                            },
+                        )
+
             except Exception as e:
                 logger.error(
                     f"[Checkpoint] Job {job_id}: single-horizon astream FAILED "
