@@ -1,43 +1,46 @@
 import os
+from typing import Dict, Any
 
-DEFAULT_CONFIG = {
-    "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
-    "results_dir": os.getenv("TA_RESULTS_DIR", "./results"),
-    "data_cache_dir": os.path.join(
-        os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
-        "dataflows/data_cache",
-    ),
-    # LLM settings
-    "llm_provider": os.getenv("TA_LLM_PROVIDER", "openai"),
-    "deep_think_llm": os.getenv("TA_LLM_DEEP", "gpt-4o"),
-    "quick_think_llm": os.getenv("TA_LLM_QUICK", "gpt-4o-mini"),
-    "backend_url": os.getenv("TA_BASE_URL", "https://api.openai.com/v1"),
-    "api_key": os.getenv("TA_API_KEY", ""),
+# Default configuration for TradingAgents
+DEFAULT_CONFIG: Dict[str, Any] = {
+    # LLM provider settings
+    "llm_provider": os.getenv("TA_LLM_PROVIDER", "deepseek"),
+    "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
+    "backend_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
     
-    # Provider-specific thinking configuration
-    "google_thinking_level": None,      # "high", "minimal", etc.
-    "openai_reasoning_effort": None,    # "medium", "high", "low"
-    
-    # Debate and discussion settings
-    "max_debate_rounds": int(os.getenv("TA_MAX_DEBATE") or "2"),
-    "max_risk_discuss_rounds": int(os.getenv("TA_MAX_RISK") or "1"),
-    "max_recur_limit": 100,
-    
-    # Prompt language control: zh, en, or auto
-    "prompt_language": os.getenv("TA_LANGUAGE", "zh"),
-    "prompt_language_by_provider": {},
-    
-    # Provider routing trace logs
-    "provider_trace": os.getenv("TA_TRACE", "1").lower() in ("1", "true", "yes", "on"),
+    # Model selection
+    "deep_think_llm": os.getenv("TA_LLM_DEEP", "deepseek-chat"),
+    "quick_think_llm": os.getenv("TA_LLM_QUICK", "deepseek-chat"),
     
     # Data vendor configuration
-    # 优先级顺序: 先尝试 AKShare（更稳定），然后是 Tushare、BaoStock，最后是 yfinance
     "data_vendors": {
-        "core_stock_apis": "cn_akshare,cn_tushare,cn_baostock,yfinance",
-        "technical_indicators": "cn_akshare,cn_tushare,cn_baostock,yfinance",
-        "fundamental_data": "cn_akshare,cn_tushare,cn_baostock,yfinance",
-        "news_data": "cn_akshare,cn_tushare,cn_baostock,yfinance",
-        "realtime_data": "cn_akshare,cn_tushare",
+        "stock_data": os.getenv("TA_DATA_VENDOR", "akshare"),
+        "fundamentals": os.getenv("TA_FUND_VENDOR", "akshare"),
+        "news": os.getenv("TA_NEWS_VENDOR", "akshare"),
+        "sentiment": os.getenv("TA_SENTIMENT_VENDOR", "akshare"),
     },
-    "tool_vendors": {},
+    
+    # Debate and discussion settings
+    # 优化：生产环境减少辩论轮数以提升响应速度
+    "max_debate_rounds": int(os.getenv("TA_MAX_DEBATE") or "1"),
+    "max_risk_discuss_rounds": int(os.getenv("TA_MAX_RISK") or "1"),
+    
+    # Prompt and output settings
+    "prompt_language": os.getenv("TA_PROMPT_LANG", "zh"),
+    "output_language": os.getenv("TA_OUTPUT_LANG", "zh"),
+    
+    # Feature flags
+    "enable_streaming": os.getenv("TA_ENABLE_STREAMING", "true").lower() == "true",
+    "enable_caching": os.getenv("TA_ENABLE_CACHING", "true").lower() == "true",
+    "debug_mode": os.getenv("TA_DEBUG", "false").lower() == "true",
 }
+
+def get_config() -> Dict[str, Any]:
+    """Get a copy of the default configuration."""
+    return DEFAULT_CONFIG.copy()
+
+def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Update the default configuration with new values."""
+    config = get_config()
+    config.update(updates)
+    return config
