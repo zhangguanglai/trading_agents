@@ -128,24 +128,65 @@ class InMemoryJobStore:
           - If job is still running, yield a ping event.
           - If job is completed or failed, terminate the generator.
         On terminal events (job.completed, job.failed), yield and terminate.
+        After terminal event: schedule cleanup of job state after 60s grace period.
         """
         q = self._ensure_queue(job_id)
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=poll_interval)
-                yield event
-                if event["event"] in ("job.completed", "job.failed"):
-                    break
-            except asyncio.TimeoutError:
-                with self._lock:
-                    status = self._jobs.get(job_id, {}).get("status")
-                if status in ("completed", "failed"):
-                    break
-                yield {
-                    "event": "ping",
-                    "data": {"timestamp": _utcnow_iso()},
-                    "timestamp": _utcnow_iso(),
-                }
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=poll_interval)
+                    yield event
+                    if event["event"] in ("job.completed", "job.failed"):
+                        break
+                except asyncio.TimeoutError:
+                    with self._lock:
+                        status = self._jobs.get(job_id, {}).get("status")
+                    if status in ("completed", "failed"):
+                        break
+                    yield {
+                        "event": "ping",
+                        "data": {"timestamp": _utcnow_iso()},
+                        "timestamp": _utcnow_iso(),
+                    }
+        finally:
+            self._schedule_cleanup(job_id)
+
+    def _schedule_cleanup(self, job_id: str) -> None:
+        """Schedule deferred cleanup of completed/failed job.
+
+        60s grace period allows clients to poll status after SSE stream ends,
+        then removes job state and event queue to prevent memory leak.
+        """
+        def _cleanup():
+            self.delete_job(job_id)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.call_later(60, _cleanup)
+        except RuntimeError:
+            pass
+
+    def _purge_stale_jobs(self, max_age_seconds: float = 3600.0) -> int:
+        """Purge completed/failed jobs older than max_age_seconds. Returns count removed."""
+        now = _utcnow_iso()
+        purged = 0
+        with self._lock:
+            stale = [
+                jid for jid, data in self._jobs.items()
+                if data.get("status") in ("completed", "failed")
+                and data.get("created_at", "") < now
+            ]
+            for jid in stale:
+                self._jobs.pop(jid, None)
+                q = self._job_events.pop(jid, None)
+                if q:
+                    while not q.empty():
+                        try:
+                            q.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                purged += 1
+        return purged
 
     # ── lifecycle ───────────────────────────────────────────────────────
 

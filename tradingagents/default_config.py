@@ -20,8 +20,8 @@ DEFAULT_CONFIG = {
     
     # Debate and discussion settings
     # 优化：生产环境减少辩论轮数以提升响应速度
-    "max_debate_rounds": int(os.getenv("TA_MAX_DEBATE") or "1"),
-    "max_risk_discuss_rounds": int(os.getenv("TA_MAX_RISK") or "1"),
+    "max_debate_rounds": max(1, min(5, int(os.getenv("TA_MAX_DEBATE") or "1"))),
+    "max_risk_discuss_rounds": max(1, min(5, int(os.getenv("TA_MAX_RISK") or "1"))),
     "max_recur_limit": 100,
     
     # Prompt language control: zh, en, or auto

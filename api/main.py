@@ -1197,6 +1197,7 @@ class AgentProgressTracker:
             "trader_investment_plan": None,
             "final_trade_decision": None,
         }
+        self._lock = Lock()
         # 跟踪已完成的阶段，避免重复发送里程碑
         self._completed_stages: set = set()
         # 跟踪已发送的 writing 状态，避免重复发送
@@ -1214,9 +1215,10 @@ class AgentProgressTracker:
 
     def _emit_milestone(self, stage: str, summary: str = "") -> None:
         """发送用户可见的里程碑事件"""
-        if stage in self._completed_stages:
-            return
-        self._completed_stages.add(stage)
+        with self._lock:
+            if stage in self._completed_stages:
+                return
+            self._completed_stages.add(stage)
         
         title = self.STAGE_TITLES.get(stage, stage)
         _emit_job_event(
@@ -1305,17 +1307,18 @@ class AgentProgressTracker:
         return {"agents": agents, "horizon": self.horizon}
 
     def _set_status(self, agent: str, status: str) -> None:
-        prev = self.status.get(agent)
-        if prev == status:
-            return
-        self.status[agent] = status
-        
-        # 记录时间
-        if status == "in_progress":
-            self.start_times[agent] = time.time()
-        elif status == "completed" and agent in self.start_times:
-            duration = time.time() - self.start_times[agent]
-            _log(f"[Timer] Agent {agent} ({self.horizon or 'main'}) finished in {duration:.2f}s")
+        with self._lock:
+            prev = self.status.get(agent)
+            if prev == status:
+                return
+            self.status[agent] = status
+            
+            # 记录时间
+            if status == "in_progress":
+                self.start_times[agent] = time.time()
+            elif status == "completed" and agent in self.start_times:
+                duration = time.time() - self.start_times[agent]
+                _log(f"[Timer] Agent {agent} ({self.horizon or 'main'}) finished in {duration:.2f}s")
 
         _emit_job_event(
             self.job_id,
@@ -1356,9 +1359,10 @@ class AgentProgressTracker:
         """发送正在编写报告的状态（每个agent只发送一次）"""
         # 检查是否已经发送过
         status_key = f"{agent_name}:{report_type}"
-        if status_key in self._writing_status_sent:
-            return
-        self._writing_status_sent.add(status_key)
+        with self._lock:
+            if status_key in self._writing_status_sent:
+                return
+            self._writing_status_sent.add(status_key)
         
         report_names = {
             "market_report": "市场分析",
@@ -2254,27 +2258,34 @@ async def _run_job_inner(
         if save_report:
             def _save_report_final_sync():
                 with get_db_ctx() as save_db:
-                    report_service.create_report(
-                        db=save_db,
-                        symbol=request.symbol,
-                        trade_date=request.trade_date,
-                        decision=decision,
-                        result_data=result,
-                        user_id=user_id,
-                        risk_items=([r.model_dump() for r in structured.risks] if structured else None),
-                        key_metrics=([m.model_dump() for m in structured.key_metrics] if structured else None),
-                        confidence_override=result["confidence"],
-                        target_price_override=result["target_price"],
-                        stop_loss_override=result["stop_loss_price"],
-                        report_id=job_id,
-                        analyst_traces=result.get("analyst_traces"),
-                    )
-                    save_db.commit()
+                    try:
+                        report_service.create_report(
+                            db=save_db,
+                            symbol=request.symbol,
+                            trade_date=request.trade_date,
+                            decision=decision,
+                            result_data=result,
+                            user_id=user_id,
+                            risk_items=([r.model_dump() for r in structured.risks] if structured else None),
+                            key_metrics=([m.model_dump() for m in structured.key_metrics] if structured else None),
+                            confidence_override=result["confidence"],
+                            target_price_override=result["target_price"],
+                            stop_loss_override=result["stop_loss_price"],
+                            report_id=job_id,
+                            analyst_traces=result.get("analyst_traces"),
+                        )
+                        save_db.commit()
+                    except Exception as e:
+                        try:
+                            save_db.rollback()
+                        except Exception:
+                            pass
+                        raise
 
             try:
                 await asyncio.to_thread(_save_report_final_sync)
             except Exception as e:
-                _log(f"Failed to finalize report: {e}")
+                _log(f"Failed to finalize report (DB save error): {e}")
         # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
         _set_job(
             job_id,

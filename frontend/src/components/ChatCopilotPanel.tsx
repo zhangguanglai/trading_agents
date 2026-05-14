@@ -156,8 +156,14 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
     const firstTokenMapRef = useRef<Record<string, boolean>>({})
     const sectionToMsgIdsRef = useRef<Record<string, string[]>>({}) // section → all agent bubble msgIds
     const typingIndicatorIdRef = useRef<string | null>(null)
+    const mountedRef = useRef(true)
     const messagesEndRef = useRef<HTMLDivElement>(null)
     const messagesContainerRef = useRef<HTMLDivElement>(null)
+
+    useEffect(() => {
+        mountedRef.current = true
+        return () => { mountedRef.current = false }
+    }, [])
 
     const {
         chatMessages,
@@ -204,6 +210,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         const pollInterval = 2000 // 2秒
 
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            if (!mountedRef.current) return false  // 组件已卸载，停止轮询
             try {
                 const status = await api.getJobStatus(currentJobId)
 
@@ -616,9 +623,8 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 if (!dataLine) continue
                 if (dataLine === '[DONE]' || currentEvent === 'done') {
                     receivedTerminal = true
-                    setIsConnected(false)
-                    setIsAnalyzing(false)
-                    return
+                    // 继续处理完本轮blocks中剩余的事件，避免丢失
+                    continue
                 }
 
                 if (currentEvent === 'ping') {

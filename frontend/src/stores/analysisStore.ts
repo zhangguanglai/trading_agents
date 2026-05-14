@@ -169,6 +169,8 @@ function createDebouncedStorage(delay = 800) {
 }
 const debouncedStorage = createDebouncedStorage()
 
+const MAX_CHAT_MESSAGES = 500
+
 export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
     currentJobId: null,
     currentSymbol: '000001.SH',
@@ -316,10 +318,11 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         }
     }),
 
-    // 添加聊天记录（持久化）
-    addChatMessage: (message) => set((state) => ({
-        chatMessages: [...state.chatMessages, message]
-    })),
+    // 添加聊天记录（持久化），最多保留 MAX_CHAT_MESSAGES 条
+    addChatMessage: (message) => set((state) => {
+        const next = [...state.chatMessages, message]
+        return { chatMessages: next.length > MAX_CHAT_MESSAGES ? next.slice(-MAX_CHAT_MESSAGES) : next }
+    }),
 
     // 追加内容到已有消息（用于流式报告 chunk 更新）
     appendToChatMessage: (id, chunk) => set((state) => ({

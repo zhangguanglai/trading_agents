@@ -247,12 +247,12 @@ def _safe(tool, payload: dict) -> Any:
     try:
         res = tool.invoke(payload)
         duration = time.time() - start_t
-        # 仅在耗时较长时输出
         if duration > 0.5:
             print(f"  [Timer] {getattr(tool, 'name', str(tool))} took {duration:.2f}s")
         return res
     except Exception as exc:
-        return f"{getattr(tool, 'name', str(tool))} 调用失败：{type(exc).__name__}: {exc}"
+        print(f"  [FetchFailed] {getattr(tool, 'name', str(tool))}: {type(exc).__name__}: {exc}")
+        return None
 
 
 def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
@@ -294,6 +294,11 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         future_to_key = {executor.submit(_safe, tool, payload): key for key, (tool, payload) in tasks.items()}
         for future in future_to_key:
             results[future_to_key[future]] = future.result()
+
+    # 清理失败的数据源：移除 None 值，避免将空数据传给 LLM 分析
+    failed_keys = [k for k, v in results.items() if v is None]
+    for k in failed_keys:
+        results.pop(k)
 
     # ── Parse CSV once, reuse for indicators and VPA ──────────────────
     raw_csv = results.get("stock_data", "")
