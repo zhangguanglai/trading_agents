@@ -1,4 +1,4 @@
-import { useMemo, useCallback, memo } from 'react'
+import { useMemo, useCallback, memo, useState, useEffect } from 'react'
 import {
     ReactFlow,
     Handle,
@@ -288,6 +288,12 @@ interface AgentCollaborationProps {
 export default function AgentCollaboration({ onSelectSection, onOpenDebate, selectedSection }: AgentCollaborationProps) {
     const { agents, isAnalyzing, streamingSections, report, currentHorizon } = useAnalysisStore()
 
+    // 强制 React Flow 重渲染的触发器：当 agent 状态变化时更新 key
+    const [renderTick, setRenderTick] = useState(0)
+    useEffect(() => {
+        setRenderTick(t => t + 1)
+    }, [agents])
+
     const cards = useMemo(() => META.map((meta) => {
         const agent = agents.find(a => a.name === meta.name)
         const streamState = meta.section ? streamingSections[meta.section] : undefined
@@ -430,6 +436,7 @@ export default function AgentCollaboration({ onSelectSection, onOpenDebate, sele
             {/* React Flow 画布 */}
             <div className="h-[700px] w-full">
                 <ReactFlow
+                    key={renderTick}
                     nodes={nodes}
                     edges={edges}
                     nodeTypes={nodeTypes}

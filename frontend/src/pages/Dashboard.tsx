@@ -23,30 +23,32 @@ export default function Dashboard() {
         if (!user?.id) return
         let cancelled = false
 
-        api.getReports(undefined, 0, 5)
-            .then(res => {
-                if (cancelled) return
-                setReportTotal(res.total)
-                setRecentReports(res.reports)
-            })
-            .catch(error => {
-                if (cancelled) return
-                console.error('Failed to load recent reports:', error)
-                setReportTotal(null)
-                setDashboardError(prev => prev || (error instanceof Error ? error.message : '加载控制台数据失败'))
-            })
-
-        api.getDashboardTrackingBoard()
-            .then(res => {
-                if (cancelled) return
-                setTrackingBoard(res)
-            })
-            .catch(error => {
-                if (cancelled) return
-                console.error('Failed to load tracking board summary:', error)
-                setTrackingBoard(null)
-                setDashboardError(prev => prev || (error instanceof Error ? error.message : '加载跟踪看板摘要失败'))
-            })
+        // 并行加载所有 Dashboard 数据，减少总等待时间
+        Promise.all([
+            api.getReports(undefined, 0, 5)
+                .then(res => {
+                    if (cancelled) return
+                    setReportTotal(res.total)
+                    setRecentReports(res.reports)
+                })
+                .catch(error => {
+                    if (cancelled) return
+                    console.error('Failed to load recent reports:', error)
+                    setReportTotal(null)
+                    setDashboardError(prev => prev || (error instanceof Error ? error.message : '加载控制台数据失败'))
+                }),
+            api.getDashboardTrackingBoard()
+                .then(res => {
+                    if (cancelled) return
+                    setTrackingBoard(res)
+                })
+                .catch(error => {
+                    if (cancelled) return
+                    console.error('Failed to load tracking board summary:', error)
+                    setTrackingBoard(null)
+                    setDashboardError(prev => prev || (error instanceof Error ? error.message : '加载跟踪看板摘要失败'))
+                }),
+        ])
 
         return () => {
             cancelled = true

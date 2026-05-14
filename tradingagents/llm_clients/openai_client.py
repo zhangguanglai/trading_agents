@@ -80,16 +80,17 @@ class OpenAIClient(BaseLLMClient):
         self.provider = provider.lower()
 
     def get_llm(self) -> Any:
-        """Return configured ChatOpenAI instance with long timeout and no retries."""
+        """Return configured ChatOpenAI instance with long timeout and sensible retries."""
         llm_kwargs = {"model": self.model}
 
         if not UnifiedChatOpenAI._is_reasoning_model(self.model):
             llm_kwargs["temperature"] = self.kwargs.get("temperature", 0)
 
-        # ── 极致稳定性配置 ──
-        # 1. 禁用一切重试：避免 Thinking 模型重复扣费或因重连导致的状态丢失
-        llm_kwargs["max_retries"] = 0
-        
+        # ── 稳定性配置 ──
+        # 1. 启用重试：网络抖动/连接错误时自动重试，避免单次失败导致整个分析中断
+        # 仅对连接错误重试，不对 4xx 重试；避免 Thinking 模型重复扣费
+        llm_kwargs["max_retries"] = 2
+
         # 2. 超长超时：默认 300 秒，给足推理模型思考时间
         llm_kwargs["timeout"] = self.kwargs.get("timeout", 300.0)
         

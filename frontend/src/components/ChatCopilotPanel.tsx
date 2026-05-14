@@ -190,7 +190,13 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         const { currentJobId } = useAnalysisStore.getState()
         if (!currentJobId) return false
 
-        pushSystem(`⏳ 分析仍在后台运行，正在持续回查任务状态...`)
+        // 避免重复添加系统提示：检查最后一条消息是否已经是恢复提示
+        const state = useAnalysisStore.getState()
+        const lastMsg = state.chatMessages[state.chatMessages.length - 1]
+        const alreadyRecovering = lastMsg?.content?.includes('正在持续回查任务状态')
+        if (!alreadyRecovering) {
+            pushSystem(`⏳ 分析仍在后台运行，正在持续回查任务状态...`)
+        }
 
         // 优化：延长轮询时间，从 8次/12秒 提升到 60次/120秒
         // 分析通常需要 5-15 分钟，给足回查时间
@@ -241,9 +247,15 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                     return true
                 }
 
-                // 每 15 秒给用户一次进度提示
+                // 每 15 秒给用户一次进度提示（避免重复：检查最后一条消息）
                 if (attempt > 0 && attempt % 7 === 0) {
-                    pushSystem(`⏳ 分析仍在进行中（已等待 ${Math.round(attempt * pollInterval / 1000)} 秒），请稍候...`)
+                    const currentState = useAnalysisStore.getState()
+                    const currentLastMsg = currentState.chatMessages[currentState.chatMessages.length - 1]
+                    const waitSec = Math.round(attempt * pollInterval / 1000)
+                    const progressText = `分析仍在进行中（已等待 ${waitSec} 秒）`
+                    if (!currentLastMsg?.content?.includes(progressText)) {
+                        pushSystem(`⏳ ${progressText}，请稍候...`)
+                    }
                 }
             } catch (pollError) {
                 // 轮询请求本身失败，继续尝试
@@ -253,8 +265,12 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
             await sleep(pollInterval)
         }
 
-        // 120 秒后仍未完成，提示用户稍后查看
-        pushSystem(`📝 分析任务仍在后台运行中。您可以稍后到「历史报告」页面查看完整结果。`)
+        // 120 秒后仍未完成，提示用户稍后查看（避免重复）
+        const finalState = useAnalysisStore.getState()
+        const finalLastMsg = finalState.chatMessages[finalState.chatMessages.length - 1]
+        if (!finalLastMsg?.content?.includes('稍后到「历史报告」页面查看')) {
+            pushSystem(`📝 分析任务仍在后台运行中。您可以稍后到「历史报告」页面查看完整结果。`)
+        }
         return false
     }
 
