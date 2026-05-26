@@ -42,7 +42,6 @@ def create_smart_money_analyst(llm, data_collector=None):
             )
             
             if is_hk:
-                # HK stocks: skip fund_flow and lhb (not available), keep volume
                 fund_flow = "港股暂无主力资金流向数据（Tushare未提供港股资金流向接口）。分析将基于成交量和价量关系进行。"
                 lhb = "港股无龙虎榜机制。"
                 volume = await _safe(get_indicators, {
@@ -50,7 +49,6 @@ def create_smart_money_analyst(llm, data_collector=None):
                     "curr_date": current_date, "look_back_days": 20,
                 })
             else:
-                # A-share: full data fetch
                 results = await asyncio.gather(
                     _safe(get_individual_fund_flow, {"symbol": ticker}),
                     _safe(get_lhb_detail, {"symbol": ticker, "date": current_date}),
@@ -60,6 +58,11 @@ def create_smart_money_analyst(llm, data_collector=None):
                     })
                 )
                 fund_flow, lhb, volume = results
+
+        # 处理 None 值（API 失败时 _safe 返回 None）
+        fund_flow = fund_flow or f"{ticker} 主力资金流向数据获取失败（网络/权限问题），请基于成交量和价量关系进行分析。"
+        lhb = lhb or f"{ticker} 龙虎榜数据不可用（非异动日或接口异常），属于正常情况。"
+        volume = volume or f"{ticker} 成交量指标（VWMA）暂无法获取。"
 
         messages = [
             SystemMessage(content=(

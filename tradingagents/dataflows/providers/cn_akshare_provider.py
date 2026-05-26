@@ -888,7 +888,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
             df_recent = df.tail(5)
             return f"{symbol} 近5日主力资金净流向：\n{df_recent.to_string(index=False)}"
         except Exception as exc:
-            return f"个股资金流向数据获取失败：{type(exc).__name__}: {exc}"
+            return None
 
     def get_lhb_detail(self, symbol: str, date: str) -> str:
         """获取龙虎榜数据，非异动日返回空提示（属正常）。"""
@@ -901,7 +901,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 return f"{symbol} 在 {date} 无龙虎榜数据（非异动日属正常）。"
             return f"{symbol} 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
         except Exception as exc:
-            return f"龙虎榜数据获取失败：{type(exc).__name__}: {exc}"
+            return None
 
     def get_zt_pool(self, date: str) -> str:
         """获取涨停板情绪池，反映市场整体情绪温度。"""

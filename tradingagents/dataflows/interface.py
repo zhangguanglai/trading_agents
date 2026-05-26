@@ -153,19 +153,20 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         try:
             result = impl_func(*args, **kwargs)
+            # None 表示数据不可用，继续尝试下一个 provider
+            if result is None:
+                _trace(f"method={method} vendor={vendor} status=fallback reason=none-result")
+                continue
             _trace(f"method={method} vendor={vendor} status=hit")
             return result
         except (AlphaVantageRateLimitError, NotImplementedError) as exc:
             last_exc = exc
-            # Try next provider for transient/routing issues or placeholder providers.
             _trace(
                 f"method={method} vendor={vendor} status=fallback "
                 f"reason={type(exc).__name__}"
             )
             continue
         except Exception as exc:
-            # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
-            # should not terminate the full chain; fall through to next vendor.
             last_exc = exc
             _trace(
                 f"method={method} vendor={vendor} status=fallback "

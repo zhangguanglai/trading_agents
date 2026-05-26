@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from typing import Optional
 
 import pandas as pd
@@ -16,6 +17,8 @@ class CnTushareProvider(BaseMarketDataProvider):
     def __init__(self):
         self._ts = None
         self._token = os.getenv("TUSHARE_TOKEN", "")
+        self._max_retries = int(os.getenv("TA_TUSHARE_RETRIES", "2"))
+        self._retry_delay = float(os.getenv("TA_TUSHARE_RETRY_DELAY", "1.0"))
 
     def _init_ts(self):
         if self._ts is not None:
@@ -30,6 +33,25 @@ class CnTushareProvider(BaseMarketDataProvider):
             raise RuntimeError(
                 "cn_tushare requires 'tushare'. Install it with: pip install tushare"
             )
+
+    def _call_with_retry(self, func, *args, **kwargs) -> pd.DataFrame | None:
+        """Call Tushare API with retry logic for transient connection errors."""
+        last_exc = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                result = func(*args, **kwargs)
+                return result
+            except Exception as exc:
+                last_exc = exc
+                # Only retry on transient network errors
+                if any(kw in str(exc).lower() for kw in ["connection", "timeout", "reset", "network", "socket"]):
+                    if attempt < self._max_retries:
+                        delay = self._retry_delay * (2 ** attempt)
+                        print(f"[Tushare] Retry {attempt + 1}/{self._max_retries} after {delay:.1f}s ({type(exc).__name__})")
+                        time.sleep(delay)
+                        continue
+                break
+        raise last_exc
 
     @property
     def name(self) -> str:
@@ -222,14 +244,13 @@ class CnTushareProvider(BaseMarketDataProvider):
         self._init_ts()
         ts_code = self._to_tushare_code(symbol)
         try:
-            # Tushare 没有直接的资金流向接口，使用 moneyflow 替代
-            df = self._ts.moneyflow(ts_code=ts_code)
+            df = self._call_with_retry(self._ts.moneyflow, ts_code=ts_code)
             if df is None or df.empty:
                 return f"{symbol} 近期主力资金流向数据暂不可用。"
             df_recent = df.tail(5)
             return f"{symbol} 近5日主力资金净流向：\n{df_recent.to_string(index=False)}"
         except Exception as e:
-            return f"个股资金流向数据获取失败：{type(e).__name__}: {e}"
+            return None
 
     def get_lhb_detail(self, symbol: str, date: str) -> str:
         """获取龙虎榜数据（港股暂不支持）。"""
@@ -238,12 +259,12 @@ class CnTushareProvider(BaseMarketDataProvider):
         self._init_ts()
         ts_code = self._to_tushare_code(symbol)
         try:
-            df = self._ts.top_list(ts_code=ts_code, trade_date=date.replace("-", ""))
+            df = self._call_with_retry(self._ts.top_list, ts_code=ts_code, trade_date=date.replace("-", ""))
             if df is None or df.empty:
                 return f"{symbol} 在 {date} 无龙虎榜数据（非异动日属正常）。"
             return f"{symbol} 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
         except Exception as e:
-            return f"龙虎榜数据获取失败：{type(e).__name__}: {e}"
+            return None
 
     def get_board_fund_flow(self) -> str:
         """获取行业板块资金流向排名。"""
