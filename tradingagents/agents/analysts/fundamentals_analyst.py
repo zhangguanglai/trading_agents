@@ -12,7 +12,8 @@ def create_fundamentals_analyst(llm, data_collector=None):
         try:
             return await asyncio.to_thread(tool.invoke, payload)
         except Exception as exc:
-            return f"调用失败：{exc}"
+            print(f"[Fundamentals._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
+            return None
 
     async def fundamentals_analyst_node(state):
         current_date = state["trade_date"]

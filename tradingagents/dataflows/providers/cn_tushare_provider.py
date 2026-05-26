@@ -270,23 +270,23 @@ class CnTushareProvider(BaseMarketDataProvider):
         """获取行业板块资金流向排名。"""
         self._init_ts()
         try:
-            df = self._ts.moneyflow_industry()
+            df = self._call_with_retry(self._ts.moneyflow_industry)
             if df is None or df.empty:
                 return "今日板块资金流向数据暂不可用。"
             return f"行业板块资金流向排名：\n{df.head(20).to_string(index=False)}"
         except Exception as e:
-            return f"板块资金流向数据获取失败：{type(e).__name__}: {e}"
+            return None
 
     def get_zt_pool(self, date: str) -> str:
         """获取涨停板情绪池。"""
         self._init_ts()
         try:
-            df = self._ts.limit_list(trade_date=date.replace("-", ""))
+            df = self._call_with_retry(self._ts.limit_list, trade_date=date.replace("-", ""))
             if df is None or df.empty:
                 return f"{date} 涨停板数据暂不可用。"
             return f"涨停板情绪池（{date}）：\n{df.head(30).to_string(index=False)}"
         except Exception as e:
-            return f"涨停板数据获取失败：{type(e).__name__}: {e}"
+            return None
 
     def get_hot_stocks_xq(self) -> str:
         """获取雪球热搜股票列表（Tushare 暂不支持，返回提示）。"""

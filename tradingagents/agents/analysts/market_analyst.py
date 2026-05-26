@@ -96,7 +96,8 @@ async def _fetch_direct(ticker, current_date, horizon):
         try:
             return await asyncio.to_thread(tool.invoke, payload)
         except Exception as exc:
-            return f"调用失败：{exc}"
+            print(f"[Market._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
+            return None
 
     days = 14 if horizon == "short" else 90
     end_dt = datetime.strptime(current_date, "%Y-%m-%d")
