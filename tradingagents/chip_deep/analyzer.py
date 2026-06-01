@@ -47,11 +47,14 @@ class ChipDeepAnalyzer:
         prev_date = self._get_prev_trade_date(perf_df, latest_date, days=14)
         prev_chips_df = await self._get_cyq_chips(prev_date) if prev_date else None
 
-        # 4. 计算六维评分
-        dim6 = self._calc_dim6(perf_df, chips_df, prev_chips_df)
+        # 4. 获取最新收盘价 (daily 接口)
+        close_price = await self._get_close_price(latest_date)
 
-        # 5. 构建结果
-        return self._build_result(perf_df, chips_df, prev_chips_df, dim6)
+        # 5. 计算六维评分
+        dim6 = self._calc_dim6(perf_df, chips_df, prev_chips_df, close_price)
+
+        # 6. 构建结果
+        return self._build_result(perf_df, chips_df, prev_chips_df, dim6, close_price)
 
     async def _get_cyq_perf(self) -> Optional[pd.DataFrame]:
         """获取筹码性能指标（带缓存）"""
@@ -98,6 +101,29 @@ class ChipDeepAnalyzer:
         except Exception:
             return None
 
+    async def _get_close_price(self, trade_date: str) -> float:
+        """获取指定日期的收盘价"""
+        try:
+            result = route_to_vendor(
+                "get_stock_data",
+                symbol=self.symbol,
+                start_date=trade_date,
+                end_date=trade_date,
+            )
+            if result is None:
+                return 0
+            # get_stock_data 返回 JSON 字符串
+            import json
+            if isinstance(result, str):
+                data = json.loads(result)
+                if isinstance(data, list) and len(data) > 0:
+                    return float(data[0].get("close", 0))
+            elif isinstance(result, pd.DataFrame) and not result.empty:
+                return float(result.iloc[0].get("close", 0))
+        except Exception:
+            pass
+        return 0
+
     def _get_prev_trade_date(self, perf_df: pd.DataFrame, latest_date: str, days: int = 14) -> Optional[str]:
         """从 perf_df 中获取 N 天前的交易日"""
         try:
@@ -111,9 +137,9 @@ class ChipDeepAnalyzer:
         except (ValueError, IndexError):
             return None
 
-    def _calc_dim6(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame]) -> dict:
+    def _calc_dim6(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close_price: float = 0) -> dict:
         """六维评分计算
-        
+
         ① 筹码密度: 当前价±10%区间筹码占比 > 50% → ✅
         ② 边际变化: 2周内某区间筹码增加 > 10% → ✅
         ③ 获利盘: < 30% → ✅ (偏冷，底部特征)
@@ -122,8 +148,8 @@ class ChipDeepAnalyzer:
         ⑥ 下方支撑: 当前价下方10%有 > 15%筹码 → ✅
         """
         latest = perf_df.iloc[-1]
-        # cyq_perf 没有 close 字段，用 weight_avg 近似或从其他数据源获取
-        close = float(latest.get("close", 0)) or float(latest.get("weight_avg", 0))
+        # 优先使用 daily 接口获取的收盘价，否则回退到 weight_avg
+        close = close_price if close_price > 0 else float(latest.get("weight_avg", 0))
         weight_avg = float(latest.get("weight_avg", 0))
         winner_rate = float(latest.get("winner_rate", 0))  # 已经是百分比
 
@@ -211,11 +237,11 @@ class ChipDeepAnalyzer:
         mask = chips_df["price"] <= support_price
         return chips_df.loc[mask, "percent"].sum() if mask.any() else 0
 
-    def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict) -> ChipDeepResult:
+    def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict, close_price: float = 0) -> ChipDeepResult:
         """构建完整分析结果"""
         latest = perf_df.iloc[-1]
-        close = float(latest.get("close", 0)) or float(latest.get("weight_avg", 0))
         weight_avg = float(latest.get("weight_avg", 0))
+        close = close_price if close_price > 0 else weight_avg
         winner_rate = float(latest.get("winner_rate", 0))
 
         # 筹码分布数据格式化
