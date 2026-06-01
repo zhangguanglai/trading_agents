@@ -149,61 +149,156 @@ class ChipDeepAnalyzer:
             return None
 
     def _calc_dim6(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close_price: float = 0) -> dict:
-        """六维评分计算
+        """六维评分计算（基于量化规则）
 
-        ① 筹码密度: 当前价±10%区间筹码占比 > 50% → ✅
-        ② 边际变化: 2周内某区间筹码增加 > 10% → ✅
-        ③ 获利盘: < 30% → ✅ (偏冷，底部特征)
-        ④ 成本抬升: 均成本较N日前上升 > 20% → ⚠️ (追高型)
-        ⑤ 超跌程度: 当前价 < 均成本 → ✅ (偏冷)
-        ⑥ 下方支撑: 当前价下方10%有 > 15%筹码 → ✅
+        ① 筹码密度: 当前价附近固定区间筹码占比 > 40% → ✅
+        ② 边际变化: 当前价附近区间两周增幅 > 10% → ✅
+        ③ 获利盘: 20%~60% → ✅，<20%需区分优质/劣质
+        ④ 成本抬升: 250日成本抬升 > 15% → ✅，需对比股价涨幅
+        ⑤ 超跌程度: ±5%→✅，-10%~-20%→✅机会区，>+15%→❌
+        ⑥ 下方支撑: 每5%~7%跌幅内有一道支撑 → ✅
         """
         latest = perf_df.iloc[-1]
         # 优先使用 daily 接口获取的收盘价
         close = close_price if close_price > 0 else float(latest.get("weight_avg", 0))
-        # 使用筹码峰位成本作为"平均成本"，而不是 weight_avg（历史加权平均会被低价筹码拉低）
+        # 使用筹码峰位成本作为"平均成本"
         peak_cost = self._calc_peak_cost(chips_df) if chips_df is not None and not chips_df.empty else float(latest.get("weight_avg", 0))
-        weight_avg = peak_cost  # 使用峰位成本替代 weight_avg
+        weight_avg = peak_cost
         winner_rate = float(latest.get("winner_rate", 0))  # 已经是百分比
 
-        # ① 筹码密度
-        density = self._calc_chip_density(chips_df, close)
-        density_score = 1 if density > 50 else 0
-        density_detail = f"当前价±10%区间筹码占比 {density:.1f}%" + ("，筹码集中 ✅" if density_score else "，筹码分散 ❌")
+        # ① 筹码密度（按价格区间计算）
+        density, vacuum_risk = self._calc_chip_density_v2(chips_df, close)
+        if density > 40:
+            density_score = 1
+            density_label = "✅"
+            density_desc = "厚垫子"
+        elif density > 20:
+            density_score = 0
+            density_label = "⚠️"
+            density_desc = "中等支撑"
+        else:
+            density_score = 0
+            density_label = "❌"
+            density_desc = "薄支撑"
+        density_detail = f"当前价附近筹码占比 {density:.1f}%，{density_desc}"
+        if vacuum_risk:
+            density_detail += " ⚠️真空悬崖"
 
-        # ② 边际变化
-        margin = self._calc_margin_change(chips_df, prev_chips_df)
-        margin_score = 1 if margin > 10 else 0
-        margin_detail = f"2周内最大区间筹码增加 {margin:.1f}个百分点" + ("，有承接 ✅" if margin_score else "，变化平缓")
+        # ② 边际变化（聚焦当前价附近）
+        margin, margin_direction = self._calc_margin_change_v2(chips_df, prev_chips_df, close)
+        if margin > 10:
+            margin_score = 1
+            margin_label = "✅"
+            margin_desc = "猛烈承接"
+        elif margin > 3:
+            margin_score = 0
+            margin_label = "⚠️"
+            margin_desc = "温和承接"
+        else:
+            margin_score = 0
+            margin_label = "❌"
+            margin_desc = "无人承接"
+        margin_detail = f"当前价附近筹码{margin_direction}{margin:+.1f}个百分点，{margin_desc}"
 
-        # ③ 获利盘
-        winner_score = 1 if winner_rate < 30 else 0
-        winner_detail = f"获利盘 {winner_rate:.1f}%" + ("，偏冷 ✅" if winner_score else "，偏热")
+        # ③ 获利盘（细化区间）
+        if 20 <= winner_rate <= 60:
+            winner_score = 1
+            winner_label = "✅"
+            winner_desc = "均衡" if winner_rate >= 40 else "偏冷"
+        elif winner_rate < 20:
+            # 区分优质/劣质低胜率
+            is_quality = self._is_quality_low_winner(perf_df, close)
+            if is_quality:
+                winner_score = 1
+                winner_label = "✅"
+                winner_desc = "优质低胜率"
+            else:
+                winner_score = 0
+                winner_label = "❌"
+                winner_desc = "劣质低胜率"
+        elif winner_rate > 80:
+            winner_score = 0
+            winner_label = "⚠️"
+            winner_desc = "过热"
+        else:
+            winner_score = 1
+            winner_label = "✅"
+            winner_desc = "偏暖"
+        winner_detail = f"获利盘 {winner_rate:.1f}%，{winner_desc}"
 
-        # ④ 成本抬升
-        cost_rise = self._calc_cost_rise(perf_df)
-        cost_rise_score = 0 if cost_rise > 20 else 1
-        cost_rise_detail = f"均成本较30日前上升 {cost_rise:.1f}%" + ("，追高型 ⚠️" if not cost_rise_score else "，正常 ✅")
+        # ④ 成本抬升（250日数据，对比股价涨幅）
+        cost_rise, price_rise, cost_rise_type = self._calc_cost_rise_v2(perf_df, close)
+        if cost_rise > 30:
+            cost_rise_score = 1
+            cost_rise_label = "✅✅"
+            cost_rise_desc = "底部系统性大幅抬高"
+        elif cost_rise > 15:
+            cost_rise_score = 1
+            cost_rise_label = "✅"
+            cost_rise_desc = "底部明显上移"
+        elif cost_rise > 5:
+            cost_rise_score = 0
+            cost_rise_label = "⚠️"
+            cost_rise_desc = "底部部分抬高"
+        else:
+            cost_rise_score = 0
+            cost_rise_label = "❌"
+            cost_rise_desc = "底部基本没变"
+        cost_rise_detail = f"成本抬升{cost_rise:.1f}%，股价涨幅{price_rise:.1f}%，{cost_rise_type}，{cost_rise_desc}"
 
-        # ⑤ 超跌程度
+        # ⑤ 超跌程度（细化区间）
         overshoot = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
-        overshoot_score = 1 if overshoot < 0 else 0
-        overshoot_detail = f"当前价 {close:.2f} vs 均成本 {weight_avg:.2f} ({overshoot:+.1f}%)" + ("，偏冷 ✅" if overshoot_score else "，偏热")
+        if abs(overshoot) <= 5:
+            overshoot_score = 1
+            overshoot_label = "✅"
+            overshoot_desc = "正常波动"
+        elif -20 <= overshoot < -10:
+            overshoot_score = 1
+            overshoot_label = "✅"
+            overshoot_desc = "中度超跌（机会区）"
+        elif overshoot < -20:
+            overshoot_score = 1
+            overshoot_label = "✅"
+            overshoot_desc = "极度超跌"
+        elif -10 <= overshoot < -5:
+            overshoot_score = 0
+            overshoot_label = "⚠️"
+            overshoot_desc = "轻度超跌"
+        elif 5 < overshoot <= 15:
+            overshoot_score = 0
+            overshoot_label = "⚠️"
+            overshoot_desc = "偏高"
+        else:  # > 15%
+            overshoot_score = 0
+            overshoot_label = "❌"
+            overshoot_desc = "极度过热"
+        overshoot_detail = f"当前价 {close:.2f} vs 均成本 {weight_avg:.2f} ({overshoot:+.1f}%)，{overshoot_desc}"
 
-        # ⑥ 下方支撑
-        support = self._calc_support_level(chips_df, close)
-        support_score = 1 if support > 15 else 0
-        support_detail = f"当前价下方10%有 {support:.1f}% 筹码" + ("，有缓冲 ✅" if support_score else "，支撑弱")
+        # ⑥ 下方支撑（多层支撑判断）
+        support_levels = self._calc_support_levels_v2(chips_df, close)
+        if len(support_levels) >= 3:
+            support_score = 1
+            support_label = "✅"
+            support_desc = "层级缓冲良好"
+        elif len(support_levels) >= 1:
+            support_score = 0
+            support_label = "⚠️"
+            support_desc = "支撑较薄"
+        else:
+            support_score = 0
+            support_label = "❌"
+            support_desc = "真空悬崖"
+        support_detail = f"{len(support_levels)}层支撑，{support_desc}"
 
         total = density_score + margin_score + winner_score + cost_rise_score + overshoot_score + support_score
 
         return {
-            "chip_density": {"score": density_score, "label": "✅" if density_score else "❌", "detail": density_detail},
-            "margin_change": {"score": margin_score, "label": "✅" if margin_score else "❌", "detail": margin_detail},
-            "winner_position": {"score": winner_score, "label": "✅" if winner_score else "❌", "detail": winner_detail},
-            "cost_rise": {"score": cost_rise_score, "label": "✅" if cost_rise_score else "⚠️", "detail": cost_rise_detail},
-            "overshoot": {"score": overshoot_score, "label": "✅" if overshoot_score else "❌", "detail": overshoot_detail},
-            "support_level": {"score": support_score, "label": "✅" if support_score else "❌", "detail": support_detail},
+            "chip_density": {"score": density_score, "label": density_label, "detail": density_detail},
+            "margin_change": {"score": margin_score, "label": margin_label, "detail": margin_detail},
+            "winner_position": {"score": winner_score, "label": winner_label, "detail": winner_detail},
+            "cost_rise": {"score": cost_rise_score, "label": cost_rise_label, "detail": cost_rise_detail},
+            "overshoot": {"score": overshoot_score, "label": overshoot_label, "detail": overshoot_detail},
+            "support_level": {"score": support_score, "label": support_label, "detail": support_detail},
             "total": total,
         }
 
@@ -228,13 +323,151 @@ class ChipDeepAnalyzer:
                 best_center = (subset["price"] * subset["percent"]).sum() / subset["percent"].sum() if subset["percent"].sum() > 0 else price
         return best_center
 
-    def _calc_chip_density(self, chips_df: pd.DataFrame, close: float) -> float:
-        """计算当前价±10%区间的筹码占比"""
+    def _calc_chip_density_v2(self, chips_df: pd.DataFrame, close: float) -> tuple[float, bool]:
+        """计算当前价附近固定区间的筹码占比（基于量化规则）
+        
+        Returns:
+            (density, vacuum_risk): 筹码占比和真空悬崖风险
+        """
         if chips_df is None or chips_df.empty:
-            return 0
-        low, high = close * 0.9, close * 1.1
+            return 0, False
+        
+        # 根据价格确定区间范围
+        if close < 20:
+            step = 1.5  # 低价股 ±1.5元
+        elif close < 100:
+            step = 3.5  # 中高价股 ±3~4元
+        else:
+            step = 5.0  # 高价股 ±5元
+        
+        # 计算当前价附近区间筹码占比
+        low, high = close - step, close + step
         mask = (chips_df["price"] >= low) & (chips_df["price"] <= high)
-        return chips_df.loc[mask, "percent"].sum() if mask.any() else 0
+        density = chips_df.loc[mask, "percent"].sum() if mask.any() else 0
+        
+        # 真空悬崖判断：当前价下方1元内筹码 < 5%
+        below_1 = chips_df[chips_df["price"] < close - 1]["percent"].sum()
+        vacuum_risk = below_1 < 5
+        
+        return density, vacuum_risk
+
+    def _calc_margin_change_v2(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float) -> tuple[float, str]:
+        """计算当前价附近区间的边际变化（基于量化规则）
+        
+        Returns:
+            (margin_change, direction): 变化百分点和方向描述
+        """
+        if prev_chips_df is None or prev_chips_df.empty or chips_df is None or chips_df.empty:
+            return 0, ""
+        
+        # 确定当前价附近区间
+        if close < 20:
+            step = 1.5
+        elif close < 100:
+            step = 3.5
+        else:
+            step = 5.0
+        
+        # 计算当前价附近区间的筹码变化
+        low, high = close - step, close + step
+        curr_mask = (chips_df["price"] >= low) & (chips_df["price"] <= high)
+        prev_mask = (prev_chips_df["price"] >= low) & (prev_chips_df["price"] <= high)
+        
+        curr_pct = chips_df.loc[curr_mask, "percent"].sum() if curr_mask.any() else 0
+        prev_pct = prev_chips_df.loc[prev_mask, "percent"].sum() if prev_mask.any() else 0
+        
+        margin_change = curr_pct - prev_pct
+        
+        # 方向判断
+        if margin_change > 0:
+            if close >= prev_chips_df["price"].mean():
+                direction = "向上集中"
+            else:
+                direction = "向下承接"
+        else:
+            direction = "减少"
+        
+        return margin_change, direction
+
+    def _is_quality_low_winner(self, perf_df: pd.DataFrame, close: float) -> bool:
+        """判断是否为优质低胜率（基于量化规则）"""
+        if len(perf_df) < 2:
+            return False
+        
+        # 年度涨幅 > 30%
+        start_price = float(perf_df.iloc[0].get("weight_avg", 0))
+        if start_price > 0:
+            annual_return = (close - start_price) / start_price * 100
+        else:
+            annual_return = 0
+        
+        # 成本抬升幅度 > 15%
+        cost_rise = self._calc_cost_rise_v2(perf_df, close)[0]
+        
+        return annual_return > 30 and cost_rise > 15
+
+    def _calc_cost_rise_v2(self, perf_df: pd.DataFrame, close: float) -> tuple[float, float, str]:
+        """计算250日成本抬升并对比股价涨幅（基于量化规则）
+        
+        Returns:
+            (cost_rise, price_rise, type_desc): 成本抬升、股价涨幅、类型描述
+        """
+        if len(perf_df) < 2:
+            return 0, 0, "数据不足"
+        
+        # 期初和期末数据
+        start_avg = float(perf_df.iloc[0].get("weight_avg", 0))
+        end_avg = float(perf_df.iloc[-1].get("weight_avg", 0))
+        
+        # 成本抬升幅度
+        if start_avg > 0:
+            cost_rise = (end_avg - start_avg) / start_avg * 100
+        else:
+            cost_rise = 0
+        
+        # 股价涨幅（使用当前收盘价 vs 期初weight_avg作为近似）
+        if start_avg > 0:
+            price_rise = (close - start_avg) / start_avg * 100
+        else:
+            price_rise = 0
+        
+        # 判断类型
+        diff = cost_rise - price_rise
+        if abs(diff) <= 10:
+            type_desc = "健康换手型"
+        elif cost_rise < price_rise:
+            type_desc = "底部抬升型"
+        else:
+            type_desc = "追高套牢型"
+        
+        return cost_rise, price_rise, type_desc
+
+    def _calc_support_levels_v2(self, chips_df: pd.DataFrame, close: float) -> List[dict]:
+        """计算多层支撑位（基于量化规则）
+        
+        Returns:
+            List[dict]: 支撑层级列表，每个包含价格和跌幅
+        """
+        if chips_df is None or chips_df.empty:
+            return []
+        
+        # 按价格排序并计算累计筹码
+        df_sorted = chips_df.sort_values("price")
+        cum = df_sorted["percent"].cumsum()
+        
+        support_levels = []
+        for pct_target in [5, 10, 15, 20]:
+            mask = cum >= pct_target
+            if mask.any():
+                support_price = df_sorted[mask]["price"].iloc[0]
+                drop_pct = (support_price / close - 1) * 100
+                support_levels.append({
+                    "pct": pct_target,
+                    "price": support_price,
+                    "drop": drop_pct
+                })
+        
+        return support_levels
 
     def _calc_margin_change(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame]) -> float:
         """计算2周边际变化最大增幅"""
@@ -270,6 +503,26 @@ class ChipDeepAnalyzer:
         support_price = close * 0.9
         mask = chips_df["price"] <= support_price
         return chips_df.loc[mask, "percent"].sum() if mask.any() else 0
+
+    def _apply_veto_rules(self, dim6: dict) -> int:
+        """应用否决项规则（基于量化规则）
+        
+        以下情况无论其他维度如何，评级不得超过 ⭐⭐：
+        - 维度一（筹码密度）判定为 ❌
+        - 维度二（边际变化）判定为 ❌ 且方向为"恐慌出逃"
+        - 维度四（成本抬升）判定为 ❌
+        """
+        # 检查否决项
+        if dim6["chip_density"]["label"] == "❌":
+            return 2  # 最高2星
+        
+        if dim6["margin_change"]["label"] == "❌" and "恐慌出逃" in dim6["margin_change"]["detail"]:
+            return 2
+        
+        if dim6["cost_rise"]["label"] == "❌":
+            return 2
+        
+        return 5  # 无否决项，正常评级
 
     def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict, close_price: float = 0) -> ChipDeepResult:
         """构建完整分析结果"""
@@ -315,8 +568,10 @@ class ChipDeepAnalyzer:
             # 按变化幅度排序，取前5
             margin_change = sorted(margin_change, key=lambda x: abs(x.change), reverse=True)[:5]
 
-        # 评级计算
-        rating = min(5, max(1, dim6["total"] + 1))
+        # 评级计算（应用否决项规则）
+        max_rating = self._apply_veto_rules(dim6)
+        base_rating = min(5, max(1, dim6["total"] + 1))
+        rating = min(base_rating, max_rating)
 
         # 总结文字
         summary = self._generate_summary(close, weight_avg, winner_rate, dim6)

@@ -143,13 +143,21 @@ function MetricItem({ label, value, highlight }: { label: string; value: string;
 
 function Dim6ScoreCard({ result }: { result: ChipDeepResult }) {
     const dims = [
-        { key: 'chip_density', name: '筹码密度', desc: '当前价±10%区间筹码集中程度' },
-        { key: 'margin_change', name: '边际变化', desc: '2周内筹码迁移方向' },
-        { key: 'winner_position', name: '获利盘', desc: '持仓获利比例' },
-        { key: 'cost_rise', name: '成本抬升', desc: '均成本较前期变化' },
-        { key: 'overshoot', name: '超跌程度', desc: '当前价偏离均成本幅度' },
-        { key: 'support_level', name: '下方支撑', desc: '下方筹码支撑强度' },
+        { key: 'chip_density', name: '筹码密度', desc: '当前价附近筹码集中程度' },
+        { key: 'margin_change', name: '边际变化', desc: '近期筹码聚集还是散开' },
+        { key: 'winner_position', name: '获利盘', desc: '持仓获利比例与情绪' },
+        { key: 'cost_rise', name: '成本抬升', desc: '底部是否抬高' },
+        { key: 'overshoot', name: '超跌程度', desc: '价格偏离成本幅度' },
+        { key: 'support_level', name: '下方支撑', desc: '破位后是否有缓冲' },
     ] as const
+
+    // 根据标签确定卡片样式
+    const getCardStyle = (label: string) => {
+        if (label.includes('✅✅')) return 'border-emerald-300 dark:border-emerald-400/50 bg-emerald-100/50 dark:bg-emerald-500/10'
+        if (label.includes('✅')) return 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-500/5'
+        if (label.includes('⚠️')) return 'border-amber-200 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/5'
+        return 'border-red-200 dark:border-red-500/30 bg-red-50/50 dark:bg-red-500/5'
+    }
 
     return (
         <div className="card">
@@ -158,7 +166,7 @@ function Dim6ScoreCard({ result }: { result: ChipDeepResult }) {
                 {dims.map((dim) => {
                     const score = result.dim6_score[dim.key]
                     return (
-                        <div key={dim.key} className={`p-4 rounded-xl border ${score.score ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-500/5' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/30'}`}>
+                        <div key={dim.key} className={`p-4 rounded-xl border ${getCardStyle(score.label)}`}>
                             <div className="flex items-center justify-between mb-2">
                                 <span className="font-bold text-slate-800 dark:text-slate-200">{dim.name}</span>
                                 <span className="text-xl">{score.label}</span>
