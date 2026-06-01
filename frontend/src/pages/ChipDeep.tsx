@@ -188,6 +188,15 @@ function Dim6ScoreCard({ result }: { result: ChipDeepResult }) {
 }
 
 function ChipDistributionCard({ result }: { result: ChipDeepResult }) {
+    if (!result.chip_distribution || result.chip_distribution.length === 0) {
+        return (
+            <div className="card">
+                <h3 className="text-lg font-black text-slate-900 dark:text-white mb-4">筹码分布</h3>
+                <p className="text-slate-500">暂无筹码分布数据</p>
+            </div>
+        )
+    }
+
     const maxPct = Math.max(...result.chip_distribution.map(d => d.percent), 1)
 
     return (
@@ -247,7 +256,8 @@ function MarginChangeCard({ result }: { result: ChipDeepResult }) {
     )
 }
 
-function PriceStagesCard({ stages }: { stages: ChipDeepResult['price_stages'] }) {
+function PriceStagesCard({ stages }: { stages?: ChipDeepResult['price_stages'] }) {
+    if (!stages || stages.length === 0) return null
     return (
         <div className="card">
             <h3 className="text-lg font-black text-slate-900 dark:text-white mb-4">价格走势总览</h3>
