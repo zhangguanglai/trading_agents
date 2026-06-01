@@ -158,9 +158,11 @@ class ChipDeepAnalyzer:
         ⑥ 下方支撑: 当前价下方10%有 > 15%筹码 → ✅
         """
         latest = perf_df.iloc[-1]
-        # 优先使用 daily 接口获取的收盘价，否则回退到 weight_avg
+        # 优先使用 daily 接口获取的收盘价
         close = close_price if close_price > 0 else float(latest.get("weight_avg", 0))
-        weight_avg = float(latest.get("weight_avg", 0))
+        # 使用筹码峰位成本作为"平均成本"，而不是 weight_avg（历史加权平均会被低价筹码拉低）
+        peak_cost = self._calc_peak_cost(chips_df) if chips_df is not None and not chips_df.empty else float(latest.get("weight_avg", 0))
+        weight_avg = peak_cost  # 使用峰位成本替代 weight_avg
         winner_rate = float(latest.get("winner_rate", 0))  # 已经是百分比
 
         # ① 筹码密度
@@ -203,6 +205,27 @@ class ChipDeepAnalyzer:
             "support_level": {"score": support_score, "label": "✅" if support_score else "❌", "detail": support_detail},
             "total": total,
         }
+
+    def _calc_peak_cost(self, chips_df: pd.DataFrame) -> float:
+        """计算筹码峰位成本（筹码最集中的价格区间的中点）"""
+        if chips_df is None or chips_df.empty:
+            return 0
+        # 找到筹码占比最高的价格区间（按 2 元区间聚合）
+        chips_df = chips_df.sort_values("price").reset_index(drop=True)
+        # 使用滑动窗口找到筹码最集中的区间
+        best_center = 0
+        best_density = 0
+        for i, row in chips_df.iterrows():
+            price = row["price"]
+            # 计算 ±1 元区间的筹码占比
+            mask = (chips_df["price"] >= price - 1) & (chips_df["price"] <= price + 1)
+            density = chips_df.loc[mask, "percent"].sum()
+            if density > best_density:
+                best_density = density
+                # 使用该区间的加权平均价格作为峰位成本
+                subset = chips_df.loc[mask]
+                best_center = (subset["price"] * subset["percent"]).sum() / subset["percent"].sum() if subset["percent"].sum() > 0 else price
+        return best_center
 
     def _calc_chip_density(self, chips_df: pd.DataFrame, close: float) -> float:
         """计算当前价±10%区间的筹码占比"""
