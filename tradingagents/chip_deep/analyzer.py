@@ -122,9 +122,10 @@ class ChipDeepAnalyzer:
         ⑥ 下方支撑: 当前价下方10%有 > 15%筹码 → ✅
         """
         latest = perf_df.iloc[-1]
-        close = float(latest.get("close", 0))
+        # cyq_perf 没有 close 字段，用 weight_avg 近似或从其他数据源获取
+        close = float(latest.get("close", 0)) or float(latest.get("weight_avg", 0))
         weight_avg = float(latest.get("weight_avg", 0))
-        winner_rate = float(latest.get("winner_rate", 0)) * 100  # 转为百分比
+        winner_rate = float(latest.get("winner_rate", 0))  # 已经是百分比
 
         # ① 筹码密度
         density = self._calc_chip_density(chips_df, close)
@@ -213,9 +214,9 @@ class ChipDeepAnalyzer:
     def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict) -> ChipDeepResult:
         """构建完整分析结果"""
         latest = perf_df.iloc[-1]
-        close = float(latest.get("close", 0))
+        close = float(latest.get("close", 0)) or float(latest.get("weight_avg", 0))
         weight_avg = float(latest.get("weight_avg", 0))
-        winner_rate = float(latest.get("winner_rate", 0)) * 100
+        winner_rate = float(latest.get("winner_rate", 0))
 
         # 筹码分布数据格式化
         chip_dist = []
@@ -291,27 +292,41 @@ class ChipDeepAnalyzer:
         )
 
     def _generate_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict) -> str:
-        """生成一句话总结"""
+        """生成分析总结（参考范例格式）"""
         total = dim6["total"]
-        parts = []
-        
-        if total >= 5:
-            parts.append("六维评分优秀，多项指标指向底部特征")
-        elif total >= 3:
-            parts.append("六维评分中等，部分指标显示底部迹象")
+        rating = min(5, max(1, total + 1))
+        stars = "⭐" * rating
+
+        # 当前价 vs 平均成本
+        price_diff = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
+        price_status = "高于" if price_diff > 0 else "低于"
+
+        # 获利盘描述
+        if winner_rate < 20:
+            winner_desc = "偏冷"
+        elif winner_rate < 50:
+            winner_desc = "温和"
         else:
-            parts.append("六维评分偏弱，底部特征不明显")
-        
-        if dim6["margin_change"]["score"]:
-            parts.append("近期有资金承接")
-        
+            winner_desc = "偏热"
+
+        # 边际变化描述
+        margin_has_score = dim6["margin_change"]["score"]
+        margin_desc = "有资金在主动买入" if margin_has_score else "筹码变化平缓"
+
+        # 底部特征
+        bottom_signals = []
         if dim6["winner_position"]["score"]:
-            parts.append("获利盘偏冷")
-        
-        if not dim6["cost_rise"]["score"]:
-            parts.append("注意成本抬升风险")
-        
-        return "。".join(parts) + f"。综合评级 {min(5, max(1, total + 1))} 星。"
+            bottom_signals.append("获利盘偏冷")
+        if dim6["overshoot"]["score"]:
+            bottom_signals.append("当前价低于平均成本")
+        if dim6["support_level"]["score"]:
+            bottom_signals.append("下方有筹码支撑")
+
+        bottom_text = "，".join(bottom_signals) if bottom_signals else "底部特征不明显"
+
+        summary = f"""当前价 {close:.2f} {price_status}平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}% {winner_desc}。{margin_desc}。六维评分 {total}/6，{bottom_text}。评级 {stars}。"""
+
+        return summary
 
     def _build_error_result(self, reason: str) -> ChipDeepResult:
         """构建错误结果"""
