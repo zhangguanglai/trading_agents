@@ -115,18 +115,22 @@ class ChipDeepAnalyzer:
                 start_date=formatted_date,
                 end_date=formatted_date,
             )
+            print(f"[chip-deep] get_stock_data result for {self.symbol} on {formatted_date}: {result}")
             if result is None:
                 return 0
             # get_stock_data 返回 JSON 字符串
             import json
             if isinstance(result, str):
                 data = json.loads(result)
+                print(f"[chip-deep] parsed data: {data}")
                 if isinstance(data, list) and len(data) > 0:
                     return float(data[0].get("close", 0))
+                elif isinstance(data, dict) and "error" not in data:
+                    return float(data.get("close", 0))
             elif isinstance(result, pd.DataFrame) and not result.empty:
                 return float(result.iloc[0].get("close", 0))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[chip-deep] get_close_price error: {e}")
         return 0
 
     def _get_prev_trade_date(self, perf_df: pd.DataFrame, latest_date: str, days: int = 14) -> Optional[str]:
