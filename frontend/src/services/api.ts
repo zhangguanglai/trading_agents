@@ -1,4 +1,5 @@
 import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse } from '@/types'
+import type { ChipDeepResult } from '@/types/chipDeep'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -344,6 +345,12 @@ class ApiService {
 
     async markFeedbackRead(id: string): Promise<void> {
         return this.request<void>(`/v1/feedbacks/${id}/read`, { method: 'POST' })
+    }
+
+    async chipDeepAnalyze(symbol: string, lookbackDays = 250): Promise<ChipDeepResult> {
+        const params = new URLSearchParams({ symbol })
+        params.append('lookback_days', lookbackDays.toString())
+        return this.request<ChipDeepResult>(`/v1/chip-deep/analyze?${params}`)
     }
 }
 

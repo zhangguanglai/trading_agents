@@ -14,10 +14,10 @@ export default function ChipDeep() {
         setLoading(true)
         setError('')
         try {
-            const res = await api.get(`/v1/chip-deep/analyze?symbol=${encodeURIComponent(symbol.trim())}`)
-            setResult(res.data)
+            const data = await api.chipDeepAnalyze(symbol.trim())
+            setResult(data)
         } catch (err: any) {
-            setError(err.response?.data?.detail || '分析失败，请稍后重试')
+            setError(err.message || '分析失败，请稍后重试')
         } finally {
             setLoading(false)
         }
