@@ -102,31 +102,32 @@ class ChipDeepAnalyzer:
             return None
 
     async def _get_close_price(self, trade_date: str) -> float:
-        """获取指定日期的收盘价"""
+        """获取指定日期的收盘价（直接使用 Tushare daily 接口）"""
         try:
-            # trade_date 可能是 YYYYMMDD 格式，转换为 YYYY-MM-DD
+            # 直接调用 Tushare provider 获取日线数据
+            from tradingagents.dataflows.providers.cn_tushare_provider import CnTushareProvider
+            provider = CnTushareProvider()
+            # trade_date 是 YYYYMMDD 格式，daily 接口需要 YYYY-MM-DD
             if len(trade_date) == 8 and trade_date.isdigit():
                 formatted_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
             else:
                 formatted_date = trade_date
-            result = route_to_vendor(
-                "get_stock_data",
-                symbol=self.symbol,
-                start_date=formatted_date,
-                end_date=formatted_date,
-            )
-            print(f"[chip-deep] get_stock_data result for {self.symbol} on {formatted_date}: {result}")
+            result = provider.get_stock_data(self.symbol, formatted_date, formatted_date)
+            print(f"[chip-deep] tushare daily result for {self.symbol} on {formatted_date}: {result}")
             if result is None:
                 return 0
-            # get_stock_data 返回 JSON 字符串
             import json
             if isinstance(result, str):
-                data = json.loads(result)
-                print(f"[chip-deep] parsed data: {data}")
-                if isinstance(data, list) and len(data) > 0:
-                    return float(data[0].get("close", 0))
-                elif isinstance(data, dict) and "error" not in data:
-                    return float(data.get("close", 0))
+                try:
+                    data = json.loads(result)
+                    print(f"[chip-deep] parsed JSON data: {data}")
+                    if isinstance(data, list) and len(data) > 0:
+                        return float(data[0].get("close", 0))
+                    elif isinstance(data, dict) and "error" not in data and "close" in data:
+                        return float(data.get("close", 0))
+                except json.JSONDecodeError:
+                    print(f"[chip-deep] result is not JSON: {result}")
+                    return 0
             elif isinstance(result, pd.DataFrame) and not result.empty:
                 return float(result.iloc[0].get("close", 0))
         except Exception as e:
