@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Search, Loader2, Download, Share2, BarChart3 } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api } from '@/services/api'
 import type { ChipDeepResult } from '@/types/chipDeep'
 
 export default function ChipDeep() {
