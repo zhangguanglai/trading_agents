@@ -685,6 +685,10 @@ class ChipDeepAnalyzer:
         rating = min(5, max(1, total + 1))
         stars = "⭐" * rating
         
+        # 预计算价格状态
+        price_diff = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
+        price_status = "高于" if price_diff > 0 else "低于"
+        
         # 价格走势
         stages = self._calc_price_stages(perf_df)
         price_trend = ""
@@ -744,7 +748,7 @@ class ChipDeepAnalyzer:
 {"\n".join(judgments) if judgments else "暂无明确信号"}
 
 ## 一句话总结
-当前价 {close:.2f} {'高于' if close > weight_avg else '低于'}平均成本 {weight_avg:.2f}（{(close-weight_avg)/weight_avg*100:+.1f}%），获利盘 {winner_rate:.1f}%。六维评分 {total}/6，评级 {stars}。"""
+当前价 {close:.2f} {price_status}平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}%。六维评分 {total}/6，评级 {stars}。"""
         
         return detailed
 
