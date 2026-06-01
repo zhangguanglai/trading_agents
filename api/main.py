@@ -4690,7 +4690,7 @@ _CHIP_DEEP_ALIASES = {
 async def chip_deep_analyze(
     symbol: str = Query(..., description="股票代码或名称，如 000951.SZ 或 中国重汽"),
     lookback_days: int = Query(250, ge=30, le=500, description="回溯天数"),
-    current_user: User = Depends(get_current_user_optional),
+    current_user: Optional[UserDB] = Depends(_optional_user),
 ):
     """筹码深度分析主接口
     
