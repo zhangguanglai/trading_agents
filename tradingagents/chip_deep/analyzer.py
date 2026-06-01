@@ -104,11 +104,16 @@ class ChipDeepAnalyzer:
     async def _get_close_price(self, trade_date: str) -> float:
         """获取指定日期的收盘价"""
         try:
+            # trade_date 可能是 YYYYMMDD 格式，转换为 YYYY-MM-DD
+            if len(trade_date) == 8 and trade_date.isdigit():
+                formatted_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+            else:
+                formatted_date = trade_date
             result = route_to_vendor(
                 "get_stock_data",
                 symbol=self.symbol,
-                start_date=trade_date,
-                end_date=trade_date,
+                start_date=formatted_date,
+                end_date=formatted_date,
             )
             if result is None:
                 return 0
