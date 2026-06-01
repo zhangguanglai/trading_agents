@@ -346,7 +346,8 @@ class ChipDeepAnalyzer:
         density = chips_df.loc[mask, "percent"].sum() if mask.any() else 0
         
         # 真空悬崖判断：当前价下方1元内筹码 < 5%
-        below_1 = chips_df[chips_df["price"] < close - 1]["percent"].sum()
+        below_1_mask = (chips_df["price"] >= close - 1) & (chips_df["price"] < close)
+        below_1 = chips_df.loc[below_1_mask, "percent"].sum() if below_1_mask.any() else 0
         vacuum_risk = below_1 < 5
         
         return density, vacuum_risk
@@ -378,9 +379,10 @@ class ChipDeepAnalyzer:
         
         margin_change = curr_pct - prev_pct
         
-        # 方向判断
+        # 方向判断（使用筹码加权平均价格）
         if margin_change > 0:
-            if close >= prev_chips_df["price"].mean():
+            prev_weighted_avg = (prev_chips_df["price"] * prev_chips_df["percent"]).sum() / prev_chips_df["percent"].sum() if prev_chips_df["percent"].sum() > 0 else 0
+            if close >= prev_weighted_avg:
                 direction = "向上集中"
             else:
                 direction = "向下承接"
@@ -415,9 +417,12 @@ class ChipDeepAnalyzer:
         if len(perf_df) < 2:
             return 0, 0, "数据不足"
         
+        # 按日期排序确保正确的时间顺序
+        df_sorted = perf_df.sort_values("trade_date")
+        
         # 期初和期末数据
-        start_avg = float(perf_df.iloc[0].get("weight_avg", 0))
-        end_avg = float(perf_df.iloc[-1].get("weight_avg", 0))
+        start_avg = float(df_sorted.iloc[0].get("weight_avg", 0))
+        end_avg = float(df_sorted.iloc[-1].get("weight_avg", 0))
         
         # 成本抬升幅度
         if start_avg > 0:
@@ -460,7 +465,7 @@ class ChipDeepAnalyzer:
             mask = cum >= pct_target
             if mask.any():
                 support_price = df_sorted[mask]["price"].iloc[0]
-                drop_pct = (support_price / close - 1) * 100
+                drop_pct = (1 - support_price / close) * 100
                 support_levels.append({
                     "pct": pct_target,
                     "price": support_price,
@@ -469,35 +474,9 @@ class ChipDeepAnalyzer:
         
         return support_levels
 
-    def _calc_margin_change(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame]) -> float:
-        """计算2周边际变化最大增幅"""
-        if prev_chips_df is None or prev_chips_df.empty or chips_df is None or chips_df.empty:
-            return 0
-        # 简化：按价格区间聚合后比较
-        max_change = 0
-        for _, row in chips_df.iterrows():
-            price = row.get("price", 0)
-            curr_pct = row.get("percent", 0)
-            # 找到前期相近价格的筹码占比
-            prev_rows = prev_chips_df[abs(prev_chips_df["price"] - price) < 0.5]
-            if not prev_rows.empty:
-                prev_pct = prev_rows["percent"].iloc[0]
-                change = curr_pct - prev_pct
-                max_change = max(max_change, change)
-        return max_change
-
-    def _calc_cost_rise(self, perf_df: pd.DataFrame) -> float:
-        """计算均成本较30日前的上升幅度"""
-        if len(perf_df) < 30:
-            return 0
-        curr_avg = float(perf_df.iloc[-1].get("weight_avg", 0))
-        prev_avg = float(perf_df.iloc[-30].get("weight_avg", 0))
-        if prev_avg == 0:
-            return 0
-        return (curr_avg - prev_avg) / prev_avg * 100
-
+    # 旧方法已废弃，保留以下方法用于兼容性
     def _calc_support_level(self, chips_df: pd.DataFrame, close: float) -> float:
-        """计算当前价下方10%的筹码占比"""
+        """计算当前价下方10%的筹码占比（兼容旧版本）"""
         if chips_df is None or chips_df.empty:
             return 0
         support_price = close * 0.9
@@ -527,7 +506,9 @@ class ChipDeepAnalyzer:
     def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict, close_price: float = 0) -> ChipDeepResult:
         """构建完整分析结果"""
         latest = perf_df.iloc[-1]
-        weight_avg = float(latest.get("weight_avg", 0))
+        # 使用筹码峰位成本作为平均成本，而不是 weight_avg（历史加权平均会被低价筹码拉低）
+        peak_cost = self._calc_peak_cost(chips_df) if chips_df is not None and not chips_df.empty else float(latest.get("weight_avg", 0))
+        weight_avg = peak_cost
         close = close_price if close_price > 0 else weight_avg
         winner_rate = float(latest.get("winner_rate", 0))
 
