@@ -4670,6 +4670,81 @@ def mark_feedback_read(
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+# ─── Chip-Deep Endpoints ─────────────────────────────────────────────────────
+
+from tradingagents.chip_deep import ChipDeepAnalyzer, ChipDeepResult
+
+# 别名映射表（PRD v2.0 定义）
+_CHIP_DEEP_ALIASES = {
+    "茅台": "600519.SH", "贵州茅台": "600519.SH",
+    "招行": "600036.SH", "招商银行": "600036.SH",
+    "平安": "601318.SH", "中国平安": "601318.SH",
+    "神华": "601088.SH", "中国神华": "601088.SH",
+    "重汽": "000951.SZ", "中国重汽": "000951.SZ",
+    "宁王": "300750.SZ", "宁德时代": "300750.SZ",
+    "迪王": "002594.SZ", "比亚迪": "002594.SZ",
+}
+
+
+@app.get("/v1/chip-deep/analyze", response_model=ChipDeepResult)
+async def chip_deep_analyze(
+    symbol: str = Query(..., description="股票代码或名称，如 000951.SZ 或 中国重汽"),
+    lookback_days: int = Query(250, ge=30, le=500, description="回溯天数"),
+    current_user: User = Depends(get_current_user_optional),
+):
+    """筹码深度分析主接口
+    
+    输入股票代码或名称，返回筹码分布、六维评分、综合评级等完整分析结果。
+    """
+    # 别名解析
+    resolved = _CHIP_DEEP_ALIASES.get(symbol.strip())
+    if resolved:
+        symbol = resolved
+    
+    # 标准化代码格式
+    symbol = symbol.strip().upper()
+    if "." not in symbol:
+        # 尝试自动补全后缀
+        if symbol.startswith("6"):
+            symbol += ".SH"
+        elif symbol.startswith("0") or symbol.startswith("3"):
+            symbol += ".SZ"
+        elif symbol.startswith("8") or symbol.startswith("4"):
+            symbol += ".BJ"
+    
+    analyzer = ChipDeepAnalyzer(symbol, lookback_days)
+    result = await analyzer.analyze()
+    return result
+
+
+@app.get("/v1/chip-deep/search")
+async def chip_deep_search(
+    q: str = Query(..., min_length=1, max_length=20, description="搜索关键词"),
+):
+    """智能搜索（含别名）"""
+    q = q.strip()
+    results = []
+    
+    # 别名匹配
+    for alias, code in _CHIP_DEEP_ALIASES.items():
+        if q in alias or alias in q:
+            results.append({
+                "ts_code": code,
+                "name": alias,
+                "match_type": "alias",
+            })
+    
+    # 去重
+    seen = set()
+    unique = []
+    for r in results:
+        if r["ts_code"] not in seen:
+            seen.add(r["ts_code"])
+            unique.append(r)
+    
+    return {"code": 0, "data": unique}
+
+
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────
 
 # Serve uploaded files (avatars etc.) from shared uploads directory

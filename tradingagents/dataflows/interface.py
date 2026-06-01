@@ -43,6 +43,8 @@ TOOLS_CATEGORIES = {
             "get_lhb_detail",
             "get_zt_pool",
             "get_hot_stocks_xq",
+            "get_cyq_perf",
+            "get_cyq_chips",
         ],
     },
 }
@@ -104,6 +106,8 @@ _CN_MARKET_ONLY_METHODS = {
     "get_board_fund_flow",
     "get_zt_pool",
     "get_hot_stocks_xq",
+    "get_cyq_perf",
+    "get_cyq_chips",
 }
 
 
@@ -138,6 +142,10 @@ def route_to_vendor(method: str, *args, **kwargs):
                 return "港股无涨跌停板机制。"
             elif method == "get_hot_stocks_xq":
                 return "港股暂无雪球热搜数据。"
+            elif method == "get_cyq_perf":
+                return None  # 港股无筹码数据，返回 None 触发降级
+            elif method == "get_cyq_chips":
+                return None  # 港股无筹码数据，返回 None 触发降级
             return f"{symbol} 为港股标的，该方法暂不支持港股数据。"
 
     for vendor in fallback_vendors:

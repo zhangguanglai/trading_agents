@@ -9,6 +9,7 @@ import Settings from './pages/Settings'
 import Portfolio from './pages/Portfolio'
 import TrackingBoard from './pages/TrackingBoard'
 import Login from './pages/Login'
+import ChipDeep from './pages/ChipDeep'
 import Feedback from './pages/Feedback'
 import Sponsor from './pages/Sponsor'
 import Thanks from './pages/Thanks'
@@ -57,6 +58,7 @@ function App() {
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/tracking-board" element={<TrackingBoard />} />
                   <Route path="/analysis" element={<Analysis />} />
+                  <Route path="/chip-deep" element={<ChipDeep />} />
                   <Route path="/reports" element={<Reports />} />
                   <Route path="/portfolio" element={<Portfolio />} />
                   <Route path="/settings" element={<Settings />} />

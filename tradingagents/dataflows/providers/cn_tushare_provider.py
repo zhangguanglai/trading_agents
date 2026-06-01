@@ -288,6 +288,35 @@ class CnTushareProvider(BaseMarketDataProvider):
         except Exception as e:
             return None
 
+    def get_cyq_perf(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame | None:
+        """获取筹码性能指标 (cyq_perf)。"""
+        self._init_ts()
+        ts_code = self._to_tushare_code(symbol)
+        try:
+            df = self._call_with_retry(
+                self._ts.cyq_perf,
+                ts_code=ts_code,
+                start_date=start_date.replace("-", ""),
+                end_date=end_date.replace("-", ""),
+            )
+            return df if df is not None and not df.empty else None
+        except Exception:
+            return None
+
+    def get_cyq_chips(self, symbol: str, trade_date: str) -> pd.DataFrame | None:
+        """获取筹码分布明细 (cyq_chips)。"""
+        self._init_ts()
+        ts_code = self._to_tushare_code(symbol)
+        try:
+            df = self._call_with_retry(
+                self._ts.cyq_chips,
+                ts_code=ts_code,
+                trade_date=trade_date.replace("-", ""),
+            )
+            return df if df is not None and not df.empty else None
+        except Exception:
+            return None
+
     def get_hot_stocks_xq(self) -> str:
         """获取雪球热搜股票列表（Tushare 暂不支持，返回提示）。"""
         return "雪球热搜数据暂不可用（Tushare 未提供该接口）。"
