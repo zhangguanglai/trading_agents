@@ -27,6 +27,17 @@ export interface Dim6Score {
     support_level: Dim6ScoreItem
 }
 
+export interface PriceStage {
+    name: string
+    start_date: string
+    end_date: string
+    start_price: number
+    end_price: number
+    change_pct: number
+    winner_rate_start: number
+    winner_rate_end: number
+}
+
 export interface ChipDeepResult {
     meta: {
         symbol: string
@@ -43,10 +54,12 @@ export interface ChipDeepResult {
         cost_95pct?: number
         winner_rate?: number
     }
+    price_stages?: PriceStage[]
     chip_distribution: ChipDistributionItem[]
     margin_change_2w: MarginChangeItem[]
     dim6_score: Dim6Score
     dim6_total: number
     rating: number
     summary_text: string
+    detailed_summary?: string
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Search, Loader2, Download, Share2, BarChart3 } from 'lucide-react'
+import { Search, Loader2, Download, Share2, BarChart3, TrendingUp, TrendingDown } from 'lucide-react'
 import { api } from '@/services/api'
 import type { ChipDeepResult } from '@/types/chipDeep'
 
@@ -84,6 +84,11 @@ export default function ChipDeep() {
                 <>
                     {/* 头部摘要卡 */}
                     <SummaryCard result={result} />
+
+                    {/* 价格走势阶段 */}
+                    {result.price_stages && result.price_stages.length > 0 && (
+                        <PriceStagesCard stages={result.price_stages} />
+                    )}
 
                     {/* 六维评分 */}
                     <Dim6ScoreCard result={result} />
@@ -234,6 +239,53 @@ function MarginChangeCard({ result }: { result: ChipDeepResult }) {
     )
 }
 
+function PriceStagesCard({ stages }: { stages: ChipDeepResult['price_stages'] }) {
+    return (
+        <div className="card">
+            <h3 className="text-lg font-black text-slate-900 dark:text-white mb-4">价格走势总览</h3>
+            <div className="space-y-3">
+                {stages.map((stage, i) => (
+                    <div key={i} className={`p-4 rounded-xl border ${
+                        stage.name === '大涨' 
+                            ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-500/5' 
+                            : 'border-red-200 dark:border-red-500/30 bg-red-50/50 dark:bg-red-500/5'
+                    }`}>
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                                {stage.name === '大涨' ? (
+                                    <TrendingUp className="w-5 h-5 text-emerald-600" />
+                                ) : (
+                                    <TrendingDown className="w-5 h-5 text-red-600" />
+                                )}
+                                <span className="font-bold text-slate-800 dark:text-slate-200">{stage.name}</span>
+                            </div>
+                            <span className={`text-sm font-bold ${
+                                stage.change_pct > 0 ? 'text-emerald-600' : 'text-red-600'
+                            }`}>
+                                {stage.change_pct > 0 ? '+' : ''}{stage.change_pct}%
+                            </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                            <div>
+                                <p className="text-slate-500">时间</p>
+                                <p className="text-slate-700 dark:text-slate-300">{stage.start_date} → {stage.end_date}</p>
+                            </div>
+                            <div>
+                                <p className="text-slate-500">价格</p>
+                                <p className="text-slate-700 dark:text-slate-300">{stage.start_price} → {stage.end_price}</p>
+                            </div>
+                            <div>
+                                <p className="text-slate-500">获利盘变化</p>
+                                <p className="text-slate-700 dark:text-slate-300">{stage.winner_rate_start.toFixed(1)}% → {stage.winner_rate_end.toFixed(1)}%</p>
+                            </div>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    )
+}
+
 function DetailedReport({ result }: { result: ChipDeepResult }) {
     const [expanded, setExpanded] = useState(false)
 
@@ -248,18 +300,26 @@ function DetailedReport({ result }: { result: ChipDeepResult }) {
             </button>
             {expanded && (
                 <div className="mt-4 space-y-4 text-sm text-slate-700 dark:text-slate-300">
-                    <section>
-                        <h4 className="font-bold text-slate-900 dark:text-white mb-2">一、价格与成本</h4>
-                        <p>当前收盘价：{result.current.close?.toFixed(2)}</p>
-                        <p>加权平均成本：{result.current.weight_avg?.toFixed(2)}</p>
-                        <p>5%成本位：{result.current.cost_5pct?.toFixed(2)}</p>
-                        <p>50%成本位：{result.current.cost_50pct?.toFixed(2)}</p>
-                        <p>95%成本位：{result.current.cost_95pct?.toFixed(2)}</p>
-                    </section>
-                    <section>
-                        <h4 className="font-bold text-slate-900 dark:text-white mb-2">二、分析总结</h4>
-                        <p>{result.summary_text}</p>
-                    </section>
+                    {result.detailed_summary ? (
+                        <div className="whitespace-pre-line">
+                            {result.detailed_summary}
+                        </div>
+                    ) : (
+                        <>
+                            <section>
+                                <h4 className="font-bold text-slate-900 dark:text-white mb-2">一、价格与成本</h4>
+                                <p>当前收盘价：{result.current.close?.toFixed(2)}</p>
+                                <p>加权平均成本：{result.current.weight_avg?.toFixed(2)}</p>
+                                <p>5%成本位：{result.current.cost_5pct?.toFixed(2)}</p>
+                                <p>50%成本位：{result.current.cost_50pct?.toFixed(2)}</p>
+                                <p>95%成本位：{result.current.cost_95pct?.toFixed(2)}</p>
+                            </section>
+                            <section>
+                                <h4 className="font-bold text-slate-900 dark:text-white mb-2">二、分析总结</h4>
+                                <p>{result.summary_text}</p>
+                            </section>
+                        </>
+                    )}
                 </div>
             )}
         </div>

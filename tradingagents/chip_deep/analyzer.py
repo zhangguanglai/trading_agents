@@ -14,6 +14,7 @@ from .models import (
     MarginChangeItem,
     Dim6Score,
     Dim6ScoreItem,
+    PriceStage,
 )
 
 
@@ -319,6 +320,12 @@ class ChipDeepAnalyzer:
 
         # 总结文字
         summary = self._generate_summary(close, weight_avg, winner_rate, dim6)
+        
+        # 详细总结（参考范例格式）
+        detailed_summary = self._generate_detailed_summary(close, weight_avg, winner_rate, dim6, perf_df, chips_df, margin_change)
+        
+        # 价格阶段
+        price_stages = self._calc_price_stages(perf_df)
 
         return ChipDeepResult(
             meta={
@@ -335,6 +342,7 @@ class ChipDeepAnalyzer:
                 "cost_95pct": float(latest.get("cost_95pct", 0)),
                 "winner_rate": winner_rate,
             },
+            price_stages=price_stages,
             chip_distribution=chip_dist,
             margin_change_2w=margin_change,
             dim6_score=Dim6Score(
@@ -348,7 +356,55 @@ class ChipDeepAnalyzer:
             dim6_total=dim6["total"],
             rating=rating,
             summary_text=summary,
+            detailed_summary=detailed_summary,
         )
+
+    def _calc_price_stages(self, perf_df: pd.DataFrame) -> List[PriceStage]:
+        """计算价格走势阶段（大涨、回调等）"""
+        if len(perf_df) < 30:
+            return []
+        
+        stages = []
+        # 找到最高点和最低点
+        max_idx = perf_df["close"].idxmax() if "close" in perf_df.columns else perf_df["weight_avg"].idxmax()
+        min_idx = perf_df["close"].idxmin() if "close" in perf_df.columns else perf_df["weight_avg"].idxmin()
+        
+        # 阶段1：从起点到最高点（大涨）
+        start_price = float(perf_df.iloc[0].get("close", perf_df.iloc[0].get("weight_avg", 0)))
+        max_price = float(perf_df.loc[max_idx].get("close", perf_df.loc[max_idx].get("weight_avg", 0)))
+        max_date = str(perf_df.loc[max_idx].get("trade_date", ""))
+        start_date = str(perf_df.iloc[0].get("trade_date", ""))
+        
+        if max_price > start_price * 1.2:  # 涨幅超过20%
+            stages.append(PriceStage(
+                name="大涨",
+                start_date=start_date,
+                end_date=max_date,
+                start_price=round(start_price, 2),
+                end_price=round(max_price, 2),
+                change_pct=round((max_price - start_price) / start_price * 100, 1),
+                winner_rate_start=float(perf_df.iloc[0].get("winner_rate", 0)),
+                winner_rate_end=float(perf_df.loc[max_idx].get("winner_rate", 0)),
+            ))
+        
+        # 阶段2：从最高点到最新（回调）
+        latest = perf_df.iloc[-1]
+        latest_price = float(latest.get("close", latest.get("weight_avg", 0)))
+        latest_date = str(latest.get("trade_date", ""))
+        
+        if latest_price < max_price * 0.9:  # 回调超过10%
+            stages.append(PriceStage(
+                name="深度回调",
+                start_date=max_date,
+                end_date=latest_date,
+                start_price=round(max_price, 2),
+                end_price=round(latest_price, 2),
+                change_pct=round((latest_price - max_price) / max_price * 100, 1),
+                winner_rate_start=float(perf_df.loc[max_idx].get("winner_rate", 0)),
+                winner_rate_end=float(latest.get("winner_rate", 0)),
+            ))
+        
+        return stages
 
     def _generate_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict) -> str:
         """生成分析总结（参考范例格式）"""
@@ -386,6 +442,75 @@ class ChipDeepAnalyzer:
         summary = f"""当前价 {close:.2f} {price_status}平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}% {winner_desc}。{margin_desc}。六维评分 {total}/6，{bottom_text}。评级 {stars}。"""
 
         return summary
+
+    def _generate_detailed_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, perf_df: pd.DataFrame, chips_df: pd.DataFrame, margin_change: List[MarginChangeItem]) -> str:
+        """生成详细分析总结（参考范例格式）"""
+        total = dim6["total"]
+        rating = min(5, max(1, total + 1))
+        stars = "⭐" * rating
+        
+        # 价格走势
+        stages = self._calc_price_stages(perf_df)
+        price_trend = ""
+        if stages:
+            for stage in stages:
+                price_trend += f"{stage.name}：{stage.start_price}→{stage.end_price}（{stage.change_pct:+.1f}%）\n"
+        
+        # 筹码结构描述
+        chip_structure = ""
+        if chips_df is not None and not chips_df.empty:
+            # 找到主要筹码区间
+            chips_sorted = chips_df.sort_values("percent", ascending=False).head(3)
+            chip_zones = []
+            for _, row in chips_sorted.iterrows():
+                price = row["price"]
+                pct = row["percent"]
+                chip_zones.append(f"[{price-1:.0f},{price+1:.0f}) {pct:.1f}%")
+            chip_structure = "、".join(chip_zones)
+        
+        # 边际变化描述
+        margin_desc = ""
+        if margin_change:
+            top_changes = sorted(margin_change, key=lambda x: abs(x.change), reverse=True)[:2]
+            changes = []
+            for item in top_changes:
+                direction = "↑" if item.change > 0 else "↓"
+                changes.append(f"[{item.price_low:.0f},{item.price_high:.0f}){direction}{abs(item.change):.1f}%")
+            margin_desc = "、".join(changes)
+        
+        # 六维判定
+        judgments = []
+        dim_names = {
+            "chip_density": "筹码密度",
+            "margin_change": "边际变化", 
+            "winner_position": "获利盘",
+            "cost_rise": "成本抬升",
+            "overshoot": "超跌程度",
+            "support_level": "下方支撑",
+        }
+        for key, name in dim_names.items():
+            score = dim6[key]["score"]
+            label = "底部" if score else ("中性" if key == "cost_rise" or key == "support_level" else "")
+            if label:
+                judgments.append(f"{name}：{label}")
+        
+        # 生成详细总结
+        detailed = f"""## 价格走势
+{price_trend if price_trend else "暂无显著趋势"}
+
+## 最新筹码结构
+{chip_structure if chip_structure else "数据不可用"}
+
+## 边际变化
+{margin_desc if margin_desc else "变化平缓"}
+
+## 综合判断
+{"\n".join(judgments) if judgments else "暂无明确信号"}
+
+## 一句话总结
+当前价 {close:.2f} {'高于' if close > weight_avg else '低于'}平均成本 {weight_avg:.2f}（{(close-weight_avg)/weight_avg*100:+.1f}%），获利盘 {winner_rate:.1f}%。六维评分 {total}/6，评级 {stars}。"""
+        
+        return detailed
 
     def _build_error_result(self, reason: str) -> ChipDeepResult:
         """构建错误结果"""
