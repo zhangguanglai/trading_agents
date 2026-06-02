@@ -804,25 +804,39 @@ class ChipDeepAnalyzer:
                         percent=round(pct, 2),
                     ))
 
-        # 边际变化数据
+        # 边际变化数据（使用统一分箱标准）
         margin_change = []
         if prev_chips_df is not None and not prev_chips_df.empty and chips_df is not None and not chips_df.empty:
-            # 简化为几个关键区间的变化
-            for _, row in chips_df.iterrows():
-                price = row.get("price", 0)
-                curr_pct = row.get("percent", 0)
-                prev_rows = prev_chips_df[abs(prev_chips_df["price"] - price) < 0.5]
-                if not prev_rows.empty:
-                    prev_pct = prev_rows["percent"].iloc[0]
-                    change = curr_pct - prev_pct
-                    if abs(change) > 1:  # 只记录显著变化
-                        margin_change.append(MarginChangeItem(
-                            price_low=round(price - 0.5, 2),
-                            price_high=round(price + 0.5, 2),
-                            prev_pct=round(prev_pct, 2),
-                            curr_pct=round(curr_pct, 2),
-                            change=round(change, 2),
-                        ))
+            # 使用与 _calc_margin_change_v2 相同的分箱标准
+            bins = self._get_price_bins(chips_df, close)
+            
+            # 按分箱聚合筹码数据
+            def _aggregate_by_bins(df: pd.DataFrame, bins: np.ndarray) -> dict:
+                """将筹码数据按分箱聚合"""
+                result = {}
+                for i in range(len(bins) - 1):
+                    bin_low, bin_high = bins[i], bins[i + 1]
+                    mask = (df["price"] >= bin_low) & (df["price"] < bin_high)
+                    pct = df.loc[mask, "percent"].sum() if mask.any() else 0
+                    result[(float(bin_low), float(bin_high))] = pct
+                return result
+            
+            curr_by_bin = _aggregate_by_bins(chips_df, bins)
+            prev_by_bin = _aggregate_by_bins(prev_chips_df, bins)
+            
+            # 计算每个分箱的变化
+            for (bin_low, bin_high), curr_pct in curr_by_bin.items():
+                prev_pct = prev_by_bin.get((bin_low, bin_high), 0)
+                change = curr_pct - prev_pct
+                if abs(change) > 0.5:  # 只记录显著变化（阈值放宽到0.5）
+                    margin_change.append(MarginChangeItem(
+                        price_low=round(bin_low, 2),
+                        price_high=round(bin_high, 2),
+                        prev_pct=round(prev_pct, 2),
+                        curr_pct=round(curr_pct, 2),
+                        change=round(change, 2),
+                    ))
+            
             # 按变化幅度排序，取前5
             margin_change = sorted(margin_change, key=lambda x: abs(x.change), reverse=True)[:5]
 
