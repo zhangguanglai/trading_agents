@@ -793,31 +793,41 @@ class ChipDeepAnalyzer:
         # 恐慌出逃：上方大幅减少(>15%) + 下方增加(>10%)
         return above_change < -15 and below_change > 10
 
-    def _apply_veto_rules(self, dim6: dict, chips_df: Optional[pd.DataFrame] = None, prev_chips_df: Optional[pd.DataFrame] = None, close: float = 0) -> int:
-        """应用否决项规则（基于量化规则）— 技能文档 v2 标准
-        
-        以下情况无论其他维度如何，评级不得超过 ⭐⭐：
-        - 维度二（筹码密度）判定为 ❌（集中度 < 20%）
-        - 维度一（边际变化）判定为 ❌ 且恐慌出逃（上方减>15% + 下方增>10%）
-        - 维度四（成本抬升）判定为 ❌（< 5%）
-        - 维度三（获利盘）判定为 ❌ 劣质低胜率
+    def _apply_veto_rules(self, dim6: dict, chips_df: Optional[pd.DataFrame] = None, prev_chips_df: Optional[pd.DataFrame] = None, close: float = 0) -> tuple[int, str]:
+        """应用否决项规则（基于量化规则）— 技能文档 v2 修正版
+
+        否决项设计原则：
+        - 仅对"极端风险信号"一票否决（恐慌出逃、筹码真空）
+        - 辅助维度（成本抬升、劣质低胜率）降级为"扣分项"，不封顶评级
+
+        一票否决（评级不得超过 ⭐⭐）：
+        - 维度二（筹码密度）判定为 ❌（集中度 < 20%）→ 无支撑，破位加速跌
+        - 维度一（边际变化）恐慌出逃（上方减>15% + 下方增>10%）→ 资金踩踏
+
+        扣分项（仅影响该维度得分，已体现在评分中，不额外封顶）：
+        - 维度四（成本抬升）❌ → 底部未抬高，但该维度权重仅0.5，不一票否决
+        - 维度三（获利盘）劣质低胜率 ❌ → 已得0分，不再额外封顶
+
+        Returns:
+            (max_rating, veto_reason): 最高允许评级、否决原因描述
         """
-        # 检查否决项
+        # 一票否决：极端风险信号
         if dim6["chip_density"]["label"] == "❌":
-            return 2  # 最高2星
-        
-        # 恐慌出逃检查（使用 _calc_margin_change_v2 返回的 panic_exit 标志）
-        # 技能文档 v2：恐慌出逃已纳入判定树，统一处理
+            return 2, "筹码密度薄弱（集中度<20%，无支撑）"
+
         if dim6["margin_change"].get("panic_exit", False):
-            return 2
-        
+            return 2, "恐慌出逃（上方减>15%且下方增>10%，资金踩踏）"
+
+        # 扣分项（不再一票否决，仅记录提示）
         if dim6["cost_rise"]["label"] == "❌":
-            return 2
-        
+            # 成本抬升权重仅0.5，辅助维度不应一票否决
+            return 5, "成本未抬升（底部未抬高，该维度得0分）"
+
         if dim6["winner_position"]["label"] == "❌" and "劣质低胜率" in dim6["winner_position"]["detail"]:
-            return 2
-        
-        return 5  # 无否决项，正常评级
+            # 劣质低胜率已在获利盘维度得0分，不再额外封顶
+            return 5, "劣质低胜率（弱势股，该维度得0分）"
+
+        return 5, ""  # 无否决项
 
     def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict, close_price: float = 0, stock_name: str = "", latest_date: str = "") -> ChipDeepResult:
         """构建完整分析结果"""
@@ -882,7 +892,7 @@ class ChipDeepAnalyzer:
             margin_change = sorted(margin_change, key=lambda x: abs(x.change), reverse=True)[:5]
 
         # 评级计算（应用否决项规则）
-        max_rating = self._apply_veto_rules(dim6, chips_df, prev_chips_df, close)
+        max_rating, veto_reason = self._apply_veto_rules(dim6, chips_df, prev_chips_df, close)
         base_rating = self._calc_base_rating(dim6["total"])
         rating = min(base_rating, max_rating)
         
@@ -929,6 +939,7 @@ class ChipDeepAnalyzer:
             ),
             dim6_total=dim6["total"],
             rating=rating,
+            veto_reason=veto_reason,
             summary_text=summary,
             detailed_summary=detailed_summary,
             core_insights=core_insights,
@@ -1018,22 +1029,24 @@ class ChipDeepAnalyzer:
 
     def _generate_one_liner(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, total: float, price_diff: float) -> str:
         """生成一句话总结（参考范例格式）
-        
+
         范例：
         ⭐⭐⭐ 中性偏持有。获利盘 42.21% 均衡（最健康）、价格 38.8 几乎精确贴合成本 38.1（+1.8%）、
         厚垫子 56%——这些是持有理由。边际 +6.4% 温和（0.5分）和成本抬升有限（+8.1%）是评分仅 3.75 的原因。
         已有仓位继续持有（股息率 4.2%）；没有仓位的不急于买入，等边际变化转强或回调至 38。
         """
-        # 评级
-        max_rating = self._calc_base_rating(total)
-        stars = "⭐" * max_rating
+        # 评级（应用否决项规则，确保与最终 rating 一致）
+        max_rating, veto_reason = self._apply_veto_rules(dim6, None, None, close)
+        base_rating = self._calc_base_rating(total)
+        rating = min(base_rating, max_rating)
+        stars = "⭐" * rating
         
-        # 评级定性
-        if max_rating >= 4:
+        # 评级定性（使用最终 rating，而非 max_rating）
+        if rating >= 4:
             stance = "积极看多"
-        elif max_rating == 3:
+        elif rating == 3:
             stance = "中性偏持有"
-        elif max_rating == 2:
+        elif rating == 2:
             stance = "中性偏观望"
         else:
             stance = "建议回避"
@@ -1097,8 +1110,8 @@ class ChipDeepAnalyzer:
             positives.append(support_desc)
         
         if positives:
-            parts.append(f"{'、'.join(positives)}——这些是{'持有' if max_rating >= 3 else '关注'}理由。")
-        
+            parts.append(f"{'、'.join(positives)}——这些是{'持有' if rating >= 3 else '关注'}理由。")
+
         # 负面因素（评分受限原因）
         negatives = []
         if margin_score < 2.0:
@@ -1107,16 +1120,18 @@ class ChipDeepAnalyzer:
             negatives.append(cost_desc)
         if winner_rate >= 80:
             negatives.append(f"获利盘 {winner_rate:.1f}% 过热")
-        
+        if veto_reason:
+            negatives.append(f"否决项：{veto_reason}")
+
         if negatives:
             parts.append(f"{'、'.join(negatives)}是评分仅 {total:.1f} 的原因。")
-        
+
         # 操作建议
-        if max_rating >= 4:
+        if rating >= 4:
             parts.append("建议在回调时分批建仓，止损位设在主要成本区下方 5-7%。")
-        elif max_rating == 3:
+        elif rating == 3:
             parts.append("已有仓位可继续持有；没有仓位的不急于买入，等待信号进一步明确。")
-        elif max_rating == 2:
+        elif rating == 2:
             parts.append("建议观望，等待筹码结构改善或价格回调至成本区附近再考虑。")
         else:
             parts.append("当前风险大于机会，建议回避或减仓。")
@@ -1127,7 +1142,7 @@ class ChipDeepAnalyzer:
         """生成分析总结（参考范例格式）"""
         total = dim6["total"]
         # 应用与 _build_result 相同的计算逻辑，确保一致性
-        max_rating = self._apply_veto_rules(dim6, chips_df, prev_chips_df, close)
+        max_rating, veto_reason = self._apply_veto_rules(dim6, chips_df, prev_chips_df, close)
         base_rating = self._calc_base_rating(total)
         rating = min(base_rating, max_rating)
         stars = "⭐" * rating
@@ -1163,6 +1178,9 @@ class ChipDeepAnalyzer:
         bottom_text = "，".join(bottom_signals) if bottom_signals else "底部特征不明显"
 
         summary = f"""当前价 {close:.2f} {price_status}平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}% {winner_desc}。{margin_desc}。六维评分 {total:.1f}/5.5，{bottom_text}。评级 {stars}。"""
+
+        if veto_reason:
+            summary += f" ⚠️ {veto_reason}"
 
         return summary
 
@@ -1294,7 +1312,7 @@ class ChipDeepAnalyzer:
         """生成详细分析总结（参考范例格式）"""
         total = dim6["total"]
         # 应用与 _build_result 相同的计算逻辑，确保一致性
-        max_rating = self._apply_veto_rules(dim6, chips_df, prev_chips_df, close)
+        max_rating, _ = self._apply_veto_rules(dim6, chips_df, prev_chips_df, close)
         base_rating = self._calc_base_rating(total)
         rating = min(base_rating, max_rating)
         stars = "⭐" * rating

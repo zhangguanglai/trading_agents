@@ -67,6 +67,7 @@ export interface ChipDeepResult {
     dim6_score: Dim6Score
     dim6_total: number
     rating: number
+    veto_reason?: string
     summary_text: string
     detailed_summary?: string
     core_insights?: CoreInsight[]

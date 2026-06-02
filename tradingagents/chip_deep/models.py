@@ -66,6 +66,7 @@ class ChipDeepResult(BaseModel):
     dim6_score: Dim6Score = Field(..., description="六维评分")
     dim6_total: float = Field(..., ge=0, le=5.5, description="六维加权总分 0~5.5")
     rating: int = Field(..., ge=1, le=5, description="综合评级 1-5星")
+    veto_reason: str = Field(default="", description="否决项原因（如有）")
     summary_text: str = Field(..., description="一句话总结")
     detailed_summary: str = Field(default="", description="详细分析总结（参考范例格式）")
     core_insights: List[CoreInsight] = Field(default=[], description="核心洞察列表")

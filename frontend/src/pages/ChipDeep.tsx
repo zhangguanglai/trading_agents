@@ -116,7 +116,7 @@ export default function ChipDeep() {
 }
 
 function SummaryCard({ result }: { result: ChipDeepResult }) {
-    const { meta, current, dim6_total, rating } = result
+    const { meta, current, dim6_total, rating, veto_reason } = result
     const stars = '⭐'.repeat(rating)
 
     return (
@@ -133,6 +133,13 @@ function SummaryCard({ result }: { result: ChipDeepResult }) {
                 <MetricItem label="获利盘" value={`${current.winner_rate?.toFixed(1) || '-'}%`} />
                 <MetricItem label="六维评分" value={`${dim6_total}/5.5`} highlight={dim6_total >= 4} />
             </div>
+            {veto_reason && (
+                <div className={`mt-3 p-3 rounded-xl border ${rating <= 2 ? 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20' : 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20'}`}>
+                    <p className={`text-sm ${rating <= 2 ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300'}`}>
+                        <span className="font-bold">{rating <= 2 ? '⛔ 评级受限：' : '⚠️ 风险提示：'}</span>{veto_reason}
+                    </p>
+                </div>
+            )}
         </div>
     )
 }
