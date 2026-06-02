@@ -501,6 +501,25 @@ class ChipDeepAnalyzer:
         bins = np.arange(bin_start, bin_end, step)
         return bins
     
+    def _aggregate_to_bins(self, chips_df: pd.DataFrame, bins: np.ndarray) -> np.ndarray:
+        """将筹码分布聚合到分箱
+        
+        Args:
+            chips_df: 筹码分布数据
+            bins: 分箱边界
+            
+        Returns:
+            每个分箱的筹码占比数组
+        """
+        binned = np.zeros(len(bins) - 1)
+        for _, row in chips_df.iterrows():
+            p = row["price"]
+            pc = row["percent"]
+            idx = np.digitize(p, bins, right=False) - 1
+            if 0 <= idx < len(binned):
+                binned[idx] += pc
+        return binned
+    
     def _get_current_bin(self, chips_df: pd.DataFrame, close: float) -> tuple[float, float]:
         """获取当前价所在分箱的区间范围（np.digitize 标准）
         
@@ -527,11 +546,11 @@ class ChipDeepAnalyzer:
         return bin_low, bin_high
 
     def _calc_margin_change_v2(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float) -> tuple[float, str, str, bool]:
-        """计算当前价所在分箱的边际变化（技能文档 v2 完整判定树）
+        """计算边际变化（技能文档 v2 双轨制）
         
-        核心逻辑：回答"资金在当前交易价位附近是流入还是流出？"
+        双轨制：取当前分箱与筹码峰分箱中绝对值更大的变化
         
-        方法：取当前价所在的分箱区间（如 [42, 44)），对比2周前后该区间的筹码占比变化。
+        核心逻辑：回答"资金在往哪个方向流动？"
         
         判定树（按优先级）：
         1. chg > 10%     → 2.0分 ✅ 猛烈向上
@@ -548,31 +567,53 @@ class ChipDeepAnalyzer:
         if prev_chips_df is None or prev_chips_df.empty or chips_df is None or chips_df.empty:
             return 0, "❌", "数据不足", False
         
-        # 获取当前价所在分箱
-        bin_low, bin_high = self._get_current_bin(chips_df, close)
+        # 获取分箱参数
+        step = self._get_bin_params(close)[0]
+        bins = self._get_price_bins(chips_df, close)
         
-        # 计算当前价所在分箱的筹码占比
-        curr_mask = (chips_df["price"] >= bin_low) & (chips_df["price"] < bin_high)
-        prev_mask = (prev_chips_df["price"] >= bin_low) & (prev_chips_df["price"] < bin_high)
+        # 聚合当前筹码分布到分箱
+        bp_current = self._aggregate_to_bins(chips_df, bins)
+        bp_prev = self._aggregate_to_bins(prev_chips_df, bins)
         
-        curr_pct = chips_df.loc[curr_mask, "percent"].sum() if curr_mask.any() else 0
-        prev_pct = prev_chips_df.loc[prev_mask, "percent"].sum() if prev_mask.any() else 0
+        # 双轨制：当前分箱 vs 筹码峰分箱
+        close_bin = np.digitize(close, bins, right=False) - 1
+        close_bin = max(0, min(close_bin, len(bp_current) - 1))
         
-        chg = curr_pct - prev_pct
+        peak_bin = int(np.argmax(bp_current))
+        
+        chg_close = bp_current[close_bin] - bp_prev[close_bin]
+        chg_peak = bp_current[peak_bin] - bp_prev[peak_bin]
+        
+        # 取绝对值更大的那个
+        if abs(chg_close) >= abs(chg_peak):
+            chg = chg_close
+            source = "当前分箱"
+            source_bin = close_bin
+        else:
+            chg = chg_peak
+            source = "筹码峰分箱"
+            source_bin = peak_bin
+        
+        # 分箱区间描述
+        bin_start = bins[source_bin]
+        bin_end = bins[source_bin + 1] if source_bin + 1 < len(bins) else bins[source_bin] + step
+        
+        # 方向判断：chg 符号天然决定方向
+        direction = "向上" if chg > 0 else "向下" if chg < 0 else "持平"
         
         # ┌─────────────────────────────────────────────────────────┐
         # │           边际变化完整判定树（技能文档 v2）              │
         # └─────────────────────────────────────────────────────────┘
         
-        # 1. 猛烈向上：当前分箱筹码大幅增加
+        # 1. 猛烈向上
         if chg > 10:
-            return 2.0, "✅", f"猛烈向上（当前分箱 +{chg:.1f}%）", False
+            return 2.0, "✅", f"[{bin_start:.0f},{bin_end:.0f})+{chg:.1f}% {direction}（{source}）", False
         
-        # 2. 温和：有承接但力度不足
+        # 2. 温和
         elif chg >= 3:
-            return 0.5, "⚠️", f"温和（当前分箱 +{chg:.1f}%）", False
+            return 0.5, "⚠️", f"[{bin_start:.0f},{bin_end:.0f})+{chg:.1f}% {direction}（{source}）", False
         
-        # 3. 恐慌出逃检测：当前分箱大幅减少，且下方分箱大增
+        # 3. 恐慌出逃检测
         elif chg < -15:
             # 计算下方分箱（低于当前价的所有分箱）的总变化
             below_curr_mask = chips_df["price"] < close
@@ -582,19 +623,17 @@ class ChipDeepAnalyzer:
             below_chg = below_curr_pct - below_prev_pct
             
             if below_chg > 10:
-                # 恐慌出逃：触发否决项
-                return 0, "❌", f"恐慌出逃（当前分箱 {chg:.1f}%，下方 +{below_chg:.1f}%）", True
+                return 0, "❌", f"[{bin_start:.0f},{bin_end:.0f}){chg:.1f}% {direction}（{source}）恐慌出逃", True
             else:
-                # 大幅减少但下方无承接
-                return 0, "❌", f"大幅减少（当前分箱 {chg:.1f}%）", False
+                return 0, "❌", f"[{bin_start:.0f},{bin_end:.0f}){chg:.1f}% {direction}（{source}）", False
         
-        # 4. 减少（但不触发否决项）
+        # 4. 减少
         elif chg < 0:
-            return 0, "❌", f"减少（当前分箱 {chg:.1f}%）", False
+            return 0, "❌", f"[{bin_start:.0f},{bin_end:.0f}){chg:.1f}% {direction}（{source}）", False
         
-        # 5. 无人：|chg| < 3%，几乎没有变化
+        # 5. 无人
         else:
-            return 0, "❌", f"无人（当前分箱 {chg:+.1f}%）", False
+            return 0, "❌", f"[{bin_start:.0f},{bin_end:.0f}){chg:+.1f}% {direction}（{source}）", False
 
     def _is_quality_low_winner(self, perf_df: pd.DataFrame, close: float) -> bool:
         """判断是否为优质低胜率（基于量化规则）
