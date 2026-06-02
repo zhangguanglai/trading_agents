@@ -38,6 +38,12 @@ export interface PriceStage {
     winner_rate_end: number
 }
 
+export interface CoreInsight {
+    title: string
+    content: string
+    level: 'info' | 'warning' | 'success' | 'danger'
+}
+
 export interface ChipDeepResult {
     meta: {
         symbol: string
@@ -63,4 +69,5 @@ export interface ChipDeepResult {
     rating: number
     summary_text: string
     detailed_summary?: string
+    core_insights?: CoreInsight[]
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { Search, Loader2, Download, Share2, BarChart3, TrendingUp, TrendingDown } from 'lucide-react'
+import { Search, Loader2, Download, Share2, BarChart3, TrendingUp, TrendingDown, Lightbulb, AlertTriangle, CheckCircle, XCircle, Info } from 'lucide-react'
 import { api } from '@/services/api'
-import type { ChipDeepResult } from '@/types/chipDeep'
+import type { ChipDeepResult, CoreInsight } from '@/types/chipDeep'
 
 export default function ChipDeep() {
     const [symbol, setSymbol] = useState('')
@@ -84,6 +84,11 @@ export default function ChipDeep() {
                 <>
                     {/* 头部摘要卡 */}
                     <SummaryCard result={result} />
+
+                    {/* 核心洞察 */}
+                    {result.core_insights && result.core_insights.length > 0 && (
+                        <CoreInsightsCard insights={result.core_insights} />
+                    )}
 
                     {/* 价格走势阶段 */}
                     {result.price_stages && result.price_stages.length > 0 && (
@@ -340,6 +345,48 @@ function DetailedReport({ result }: { result: ChipDeepResult }) {
                     )}
                 </div>
             )}
+        </div>
+    )
+}
+
+function CoreInsightsCard({ insights }: { insights: CoreInsight[] }) {
+    const getIcon = (level: string) => {
+        switch (level) {
+            case 'success': return <CheckCircle className="w-5 h-5 text-emerald-600" />
+            case 'warning': return <AlertTriangle className="w-5 h-5 text-amber-600" />
+            case 'danger': return <XCircle className="w-5 h-5 text-red-600" />
+            default: return <Info className="w-5 h-5 text-blue-600" />
+        }
+    }
+
+    const getCardStyle = (level: string) => {
+        switch (level) {
+            case 'success': return 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-500/5'
+            case 'warning': return 'border-amber-200 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/5'
+            case 'danger': return 'border-red-200 dark:border-red-500/30 bg-red-50/50 dark:bg-red-500/5'
+            default: return 'border-blue-200 dark:border-blue-500/30 bg-blue-50/50 dark:bg-blue-500/5'
+        }
+    }
+
+    return (
+        <div className="card">
+            <div className="flex items-center gap-2 mb-4">
+                <Lightbulb className="w-5 h-5 text-amber-500" />
+                <h3 className="text-lg font-black text-slate-900 dark:text-white">核心洞察</h3>
+            </div>
+            <div className="space-y-3">
+                {insights.map((insight, i) => (
+                    <div key={i} className={`p-4 rounded-xl border ${getCardStyle(insight.level)}`}>
+                        <div className="flex items-start gap-3">
+                            <div className="mt-0.5 flex-shrink-0">{getIcon(insight.level)}</div>
+                            <div>
+                                <h4 className="font-bold text-slate-800 dark:text-slate-200 mb-1">{insight.title}</h4>
+                                <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">{insight.content}</p>
+                            </div>
+                        </div>
+                    </div>
+                ))}
+            </div>
         </div>
     )
 }

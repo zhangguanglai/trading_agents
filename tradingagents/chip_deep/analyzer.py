@@ -15,6 +15,7 @@ from .models import (
     Dim6Score,
     Dim6ScoreItem,
     PriceStage,
+    CoreInsight,
 )
 
 
@@ -584,6 +585,9 @@ class ChipDeepAnalyzer:
         # 详细总结（参考范例格式）
         detailed_summary = self._generate_detailed_summary(close, weight_avg, winner_rate, dim6, perf_df, chips_df, margin_change)
         
+        # 核心洞察
+        core_insights = self._generate_core_insights(close, weight_avg, winner_rate, dim6, perf_df, chips_df, margin_change)
+        
         # 价格阶段
         price_stages = self._calc_price_stages(perf_df)
 
@@ -618,6 +622,7 @@ class ChipDeepAnalyzer:
             rating=rating,
             summary_text=summary,
             detailed_summary=detailed_summary,
+            core_insights=core_insights,
         )
 
     def _format_date(self, date_str: str) -> str:
@@ -738,6 +743,112 @@ class ChipDeepAnalyzer:
         summary = f"""当前价 {close:.2f} {price_status}平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}% {winner_desc}。{margin_desc}。六维评分 {total}/6，{bottom_text}。评级 {stars}。"""
 
         return summary
+
+    def _generate_core_insights(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, perf_df: pd.DataFrame, chips_df: pd.DataFrame, margin_change: List[MarginChangeItem]) -> List[CoreInsight]:
+        """生成核心洞察列表"""
+        insights = []
+        price_diff = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
+        
+        # 1. 主力意图研判
+        density_score = dim6["chip_density"]["score"]
+        margin_score = dim6["margin_change"]["score"]
+        winner_score = dim6["winner_position"]["score"]
+        cost_rise_score = dim6["cost_rise"]["score"]
+        
+        if density_score and margin_score and winner_score and cost_rise_score:
+            insights.append(CoreInsight(
+                title="主力吸筹信号明显",
+                content=f"当前价 {close:.2f} 低于平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘仅 {winner_rate:.1f}%。筹码密度达标且边际变化积极，成本持续抬升，表明主力资金正在低位吸筹，后续上涨概率较大。",
+                level="success"
+            ))
+        elif not density_score and not margin_score:
+            insights.append(CoreInsight(
+                title="筹码分散，观望为主",
+                content=f"当前筹码密度不足，边际变化平缓，缺乏资金主动介入迹象。建议等待筹码重新集中后再考虑布局。",
+                level="warning"
+            ))
+        elif winner_rate > 80:
+            insights.append(CoreInsight(
+                title="获利盘过高，注意回调风险",
+                content=f"获利盘高达 {winner_rate:.1f}%，多数投资者处于盈利状态，抛压可能随时出现。建议逢高减仓，锁定利润。",
+                level="danger"
+            ))
+        
+        # 2. 关键价位提示
+        if chips_df is not None and not chips_df.empty:
+            # 主要成本区
+            chips_sorted = chips_df.sort_values("percent", ascending=False)
+            top_zone = chips_sorted.iloc[0]
+            peak_price = top_zone["price"]
+            peak_pct = top_zone["percent"]
+            
+            if abs(close - peak_price) / peak_price < 0.05:
+                insights.append(CoreInsight(
+                    title="当前价接近主力成本区",
+                    content=f"当前价 {close:.2f} 与主力主要成本区 {peak_price:.2f} 非常接近（偏差 < 5%），此位置支撑较强，是较为安全的买入区域。",
+                    level="success"
+                ))
+            elif close > peak_price * 1.15:
+                insights.append(CoreInsight(
+                    title="当前价远离主力成本区",
+                    content=f"当前价 {close:.2f} 已大幅高于主力成本区 {peak_price:.2f}（+{(close/peak_price-1)*100:.0f}%），追高风险较大，建议等待回调至成本区附近再介入。",
+                    level="warning"
+                ))
+        
+        # 3. 周期定位
+        stages = self._calc_price_stages(perf_df)
+        if stages:
+            latest_stage = stages[-1]
+            if latest_stage.name == "深度回调":
+                insights.append(CoreInsight(
+                    title=f"处于深度回调阶段（已回调 {abs(latest_stage.change_pct):.1f}%）",
+                    content=f"从最高点 {latest_stage.start_price} 回调至 {latest_stage.end_price}，获利盘从 {latest_stage.winner_rate_start:.1f}% 降至 {latest_stage.winner_rate_end:.1f}%。若六维评分良好，此阶段可能是中长期布局的良机。",
+                    level="info"
+                ))
+            elif latest_stage.name == "大涨":
+                insights.append(CoreInsight(
+                    title=f"处于上涨阶段（已上涨 {latest_stage.change_pct:.1f}%）",
+                    content=f"从 {latest_stage.start_price} 上涨至 {latest_stage.end_price}，获利盘从 {latest_stage.winner_rate_start:.1f}% 升至 {latest_stage.winner_rate_end:.1f}%。注意获利盘过高后的回调风险。",
+                    level="info"
+                ))
+        
+        # 4. 操作策略
+        total = dim6["total"]
+        if total >= 5:
+            insights.append(CoreInsight(
+                title="六维评分优秀，积极看多",
+                content=f"六维评分 {total}/6，多项指标共振向好。建议在回调时分批建仓，止损位设在主要成本区下方 5-7%。",
+                level="success"
+            ))
+        elif total >= 3:
+            insights.append(CoreInsight(
+                title="六维评分中等，谨慎参与",
+                content=f"六维评分 {total}/6，部分指标向好但存在分歧。建议小仓位试探，等待信号进一步明确后再加仓。",
+                level="info"
+            ))
+        else:
+            insights.append(CoreInsight(
+                title="六维评分偏弱，建议观望",
+                content=f"六维评分 {total}/6，多数指标未达标。当前不是最佳介入时机，建议耐心等待筹码结构改善。",
+                level="warning"
+            ))
+        
+        # 5. 风险预警
+        if not dim6["support_level"]["score"]:
+            insights.append(CoreInsight(
+                title="下方支撑薄弱，注意下跌风险",
+                content="当前价下方筹码稀疏，形成'真空悬崖'。一旦跌破关键支撑位，可能引发连锁抛售，下跌空间较大。",
+                level="danger"
+            ))
+        
+        if dim6["cost_rise"]["label"] == "❌":
+            insights.append(CoreInsight(
+                title="成本未抬升，缺乏上涨动能",
+                content="250日成本基本未变，说明长期资金并未积极进场。缺乏成本抬升支撑，股价上涨持续性存疑。",
+                level="warning"
+            ))
+        
+        return insights
 
     def _generate_detailed_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, perf_df: pd.DataFrame, chips_df: pd.DataFrame, margin_change: List[MarginChangeItem]) -> str:
         """生成详细分析总结（参考范例格式）"""

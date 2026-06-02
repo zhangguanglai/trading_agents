@@ -49,6 +49,13 @@ class PriceStage(BaseModel):
     winner_rate_end: float = Field(..., description="结束获利盘(%)")
 
 
+class CoreInsight(BaseModel):
+    """核心洞察"""
+    title: str = Field(..., description="洞察标题")
+    content: str = Field(..., description="洞察内容")
+    level: str = Field(..., description="级别: info/warning/success/danger")
+
+
 class ChipDeepResult(BaseModel):
     """筹码深度分析完整结果"""
     meta: dict = Field(..., description="元数据")
@@ -61,3 +68,4 @@ class ChipDeepResult(BaseModel):
     rating: int = Field(..., ge=1, le=5, description="综合评级 1-5星")
     summary_text: str = Field(..., description="一句话总结")
     detailed_summary: str = Field(default="", description="详细分析总结（参考范例格式）")
+    core_insights: List[CoreInsight] = Field(default=[], description="核心洞察列表")
