@@ -735,17 +735,22 @@ class ChipDeepAnalyzer:
                 judgments.append(f"{name}：{label}")
         
         # 生成详细总结
+        price_trend_text = price_trend if price_trend else "暂无显著趋势"
+        chip_structure_text = chip_structure if chip_structure else "数据不可用"
+        margin_desc_text = margin_desc if margin_desc else "变化平缓"
+        judgments_text = "\n".join(judgments) if judgments else "暂无明确信号"
+        
         detailed = f"""## 价格走势
-{price_trend if price_trend else "暂无显著趋势"}
+{price_trend_text}
 
 ## 最新筹码结构
-{chip_structure if chip_structure else "数据不可用"}
+{chip_structure_text}
 
 ## 边际变化
-{margin_desc if margin_desc else "变化平缓"}
+{margin_desc_text}
 
 ## 综合判断
-{"\n".join(judgments) if judgments else "暂无明确信号"}
+{judgments_text}
 
 ## 一句话总结
 当前价 {close:.2f} {price_status}平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}%。六维评分 {total}/6，评级 {stars}。"""
