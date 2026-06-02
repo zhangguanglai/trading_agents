@@ -742,7 +742,10 @@ class ChipDeepAnalyzer:
     def _generate_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict) -> str:
         """生成分析总结（参考范例格式）"""
         total = dim6["total"]
-        rating = min(5, max(1, total + 1))
+        # 应用与 _build_result 相同的否决规则，确保一致性
+        max_rating = self._apply_veto_rules(dim6)
+        base_rating = min(5, max(1, total + 1))
+        rating = min(base_rating, max_rating)
         stars = "⭐" * rating
 
         # 当前价 vs 平均成本
@@ -894,7 +897,10 @@ class ChipDeepAnalyzer:
     def _generate_detailed_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, perf_df: pd.DataFrame, chips_df: pd.DataFrame, margin_change: List[MarginChangeItem]) -> str:
         """生成详细分析总结（参考范例格式）"""
         total = dim6["total"]
-        rating = min(5, max(1, total + 1))
+        # 应用与 _build_result 相同的否决规则，确保一致性
+        max_rating = self._apply_veto_rules(dim6)
+        base_rating = min(5, max(1, total + 1))
+        rating = min(base_rating, max_rating)
         stars = "⭐" * rating
 
         # 预计算价格状态
@@ -920,14 +926,16 @@ class ChipDeepAnalyzer:
         # 筹码结构描述（更详细）
         chip_structure = ""
         if chips_df is not None and not chips_df.empty:
-            # 找到主要筹码区间（前5大筹码集中区）
-            chips_sorted = chips_df.sort_values("percent", ascending=False).head(5)
+            # 按价格区间分箱聚合，展示当前价附近的筹码结构
+            chips_sorted = chips_df.sort_values("price")
+            # 使用与 _build_result 相同的分箱逻辑（10个区间）
+            bins = pd.cut(chips_sorted["price"], bins=10)
+            grouped = chips_sorted.groupby(bins)["percent"].sum().sort_values(ascending=False)
             chip_zones = []
-            for i, (_, row) in enumerate(chips_sorted.iterrows(), 1):
-                price = row["price"]
-                pct = row["percent"]
-                chip_zones.append(f"  {i}. [{price-1:.1f}, {price+1:.1f}) 占比 {pct:.2f}%")
-            chip_structure = "\n".join(chip_zones)
+            for i, (interval, pct) in enumerate(grouped.head(5).items(), 1):
+                if pct > 0:
+                    chip_zones.append(f"  {i}. [{interval.left:.1f}, {interval.right:.1f}) 占比 {pct:.2f}%")
+            chip_structure = "\n".join(chip_zones) if chip_zones else "  筹码分布较为分散"
         else:
             chip_structure = "  数据不可用"
 
