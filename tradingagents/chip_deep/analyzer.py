@@ -959,6 +959,113 @@ class ChipDeepAnalyzer:
         
         return stages
 
+    def _generate_one_liner(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, total: float, price_diff: float) -> str:
+        """生成一句话总结（参考范例格式）
+        
+        范例：
+        ⭐⭐⭐ 中性偏持有。获利盘 42.21% 均衡（最健康）、价格 38.8 几乎精确贴合成本 38.1（+1.8%）、
+        厚垫子 56%——这些是持有理由。边际 +6.4% 温和（0.5分）和成本抬升有限（+8.1%）是评分仅 3.75 的原因。
+        已有仓位继续持有（股息率 4.2%）；没有仓位的不急于买入，等边际变化转强或回调至 38。
+        """
+        # 评级
+        max_rating = self._calc_base_rating(total)
+        stars = "⭐" * max_rating
+        
+        # 评级定性
+        if max_rating >= 4:
+            stance = "积极看多"
+        elif max_rating == 3:
+            stance = "中性偏持有"
+        elif max_rating == 2:
+            stance = "中性偏观望"
+        else:
+            stance = "建议回避"
+        
+        # 获利盘定性
+        if winner_rate < 20:
+            winner_qual = "偏冷（恐慌）"
+        elif winner_rate < 40:
+            winner_qual = "偏低"
+        elif winner_rate < 60:
+            winner_qual = "均衡（最健康）"
+        elif winner_rate < 80:
+            winner_qual = "偏高"
+        else:
+            winner_qual = "过热"
+        
+        # 价格位置定性
+        if abs(price_diff) < 3:
+            price_qual = f"几乎精确贴合成本 {weight_avg:.2f}（{price_diff:+.1f}%）"
+        elif price_diff < 0:
+            price_qual = f"低于成本 {weight_avg:.2f}（{price_diff:+.1f}%）"
+        else:
+            price_qual = f"高于成本 {weight_avg:.2f}（{price_diff:+.1f}%）"
+        
+        # 下方支撑（厚垫子）
+        support_score = dim6["support_level"]["score"]
+        if support_score >= 0.5:
+            support_desc = f"下方有 {int(support_score * 8)} 层支撑"
+        else:
+            support_desc = "下方支撑薄弱"
+        
+        # 边际变化
+        margin_score = dim6["margin_change"]["score"]
+        margin_detail = dim6["margin_change"]["detail"]
+        if margin_score >= 2.0:
+            margin_desc = f"边际变化积极（{margin_detail}，{margin_score}分）"
+        elif margin_score >= 0.5:
+            margin_desc = f"边际变化温和（{margin_detail}，{margin_score}分）"
+        else:
+            margin_desc = f"边际变化不足（{margin_detail}，{margin_score}分）"
+        
+        # 成本抬升
+        cost_rise_score = dim6["cost_rise"]["score"]
+        cost_rise_detail = dim6["cost_rise"]["detail"]
+        if cost_rise_score >= 0.5:
+            cost_desc = f"成本抬升明显（{cost_rise_detail}）"
+        else:
+            cost_desc = f"成本抬升有限（{cost_rise_detail}）"
+        
+        # 组装一句话总结
+        parts = []
+        parts.append(f"{stars} {stance}。")
+        
+        # 正面因素（持有/买入理由）
+        positives = []
+        if 40 <= winner_rate < 60:
+            positives.append(f"获利盘 {winner_rate:.1f}% {winner_qual}")
+        if abs(price_diff) < 5:
+            positives.append(price_qual)
+        if support_score >= 0.5:
+            positives.append(support_desc)
+        
+        if positives:
+            parts.append(f"{'、'.join(positives)}——这些是{'持有' if max_rating >= 3 else '关注'}理由。")
+        
+        # 负面因素（评分受限原因）
+        negatives = []
+        if margin_score < 2.0:
+            negatives.append(margin_desc)
+        if cost_rise_score < 0.5:
+            negatives.append(cost_desc)
+        if winner_rate >= 80:
+            negatives.append(f"获利盘 {winner_rate:.1f}% 过热")
+        
+        if negatives:
+            parts.append(f"{'、'.join(negatives)}是评分仅 {total:.1f} 的原因。")
+        
+        # 操作建议
+        if max_rating >= 4:
+            parts.append("建议在回调时分批建仓，止损位设在主要成本区下方 5-7%。")
+        elif max_rating == 3:
+            parts.append("已有仓位可继续持有；没有仓位的不急于买入，等待信号进一步明确。")
+        elif max_rating == 2:
+            parts.append("建议观望，等待筹码结构改善或价格回调至成本区附近再考虑。")
+        else:
+            parts.append("当前风险大于机会，建议回避或减仓。")
+        
+        return "".join(parts)
+
     def _generate_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, chips_df: Optional[pd.DataFrame] = None, prev_chips_df: Optional[pd.DataFrame] = None) -> str:
         """生成分析总结（参考范例格式）"""
         total = dim6["total"]
@@ -1006,6 +1113,15 @@ class ChipDeepAnalyzer:
         """生成核心洞察列表"""
         insights = []
         price_diff = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
+        total = dim6["total"]
+        
+        # 0. 一句话总结（放在最前面，参考范例格式）
+        one_liner = self._generate_one_liner(close, weight_avg, winner_rate, dim6, total, price_diff)
+        insights.append(CoreInsight(
+            title="一句话总结",
+            content=one_liner,
+            level="info"
+        ))
         
         # 1. 主力意图研判
         density_score = dim6["chip_density"]["score"]
