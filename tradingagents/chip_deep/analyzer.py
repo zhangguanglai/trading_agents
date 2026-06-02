@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 
 from tradingagents.dataflows.interface import route_to_vendor
@@ -494,13 +495,68 @@ class ChipDeepAnalyzer:
         
         return density, vacuum_risk
 
-    def _calc_margin_change_v2(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float) -> tuple[float, str]:
-        """计算当前价附近区间的边际变化（基于量化规则）
+    def _get_price_bins(self, chips_df: pd.DataFrame, close: float) -> np.ndarray:
+        """生成价格分箱边界（np.arange 标准）
         
-        技能文档标准：
-        - 股价 < 20元: 搜索范围 ±1.5元
-        - 股价 20~100元: 搜索范围 ±3.0元
-        - 股价 > 100元: 搜索范围 ±8.0元
+        分箱边界规则：
+        - 从最低价向下取整到分箱粒度边界
+        - 到最高价向上取整到分箱粒度边界
+        - 左闭右开 [bin_start, bin_end)
+        
+        示例：股价 43.19, step=2.0
+        - price_min 向下取整 → 40, price_max 向上取整 → 50
+        - bins = [40, 42, 44, 46, 48, 50]
+        - 43.19 ∈ [42, 44)
+        
+        Returns:
+            bins: 分箱边界数组
+        """
+        step, _ = self._get_bin_params(close)
+        
+        price_min = chips_df["price"].min()
+        price_max = chips_df["price"].max()
+        
+        # 从最低价向下取整到分箱边界
+        bin_start = np.floor(price_min / step) * step
+        # 到最高价向上取整到分箱边界
+        bin_end = np.ceil(price_max / step) * step + step  # +step 确保包含最大值
+        
+        bins = np.arange(bin_start, bin_end, step)
+        return bins
+    
+    def _get_current_bin(self, chips_df: pd.DataFrame, close: float) -> tuple[float, float]:
+        """获取当前价所在分箱的区间范围（np.digitize 标准）
+        
+        归属规则：np.digitize(p, bins, right=False) - 1
+        - 左闭右开 [bin_start, bin_end)
+        - 42.00 ∈ [42, 44) ✅
+        - 43.19 ∈ [42, 44) ✅
+        - 44.00 ∈ [44, 46) ❌（右边界不包含，归入下一个箱）
+        
+        Returns:
+            (bin_low, bin_high): 当前价所在分箱的上下界
+        """
+        bins = self._get_price_bins(chips_df, close)
+        
+        # np.digitize 返回的是 bins 中的索引（1-based）
+        idx = np.digitize(close, bins, right=False) - 1
+        
+        # 确保索引在有效范围内
+        idx = max(0, min(idx, len(bins) - 2))
+        
+        bin_low = float(bins[idx])
+        bin_high = float(bins[idx + 1])
+        
+        return bin_low, bin_high
+
+    def _calc_margin_change_v2(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float) -> tuple[float, str]:
+        """计算当前价所在分箱的边际变化（技能文档推荐方法①）
+        
+        核心逻辑：回答"资金在当前交易价位附近是流入还是流出？"
+        
+        方法：取当前价所在的分箱区间（如 [42, 44)），对比2周前后该区间的筹码占比变化。
+        
+        示例：当前价 43.19 → 分箱 [42, 44) → 计算该区间的筹码变化
         
         Returns:
             (margin_change, direction): 变化百分点和方向描述
@@ -508,23 +564,26 @@ class ChipDeepAnalyzer:
         if prev_chips_df is None or prev_chips_df.empty or chips_df is None or chips_df.empty:
             return 0, ""
         
-        # 使用技能文档标准搜索范围
-        _, search_range = self._get_bin_params(close)
+        # 获取当前价所在分箱
+        bin_low, bin_high = self._get_current_bin(chips_df, close)
         
-        # 计算当前价附近区间的筹码变化
-        low, high = close - search_range, close + search_range
-        curr_mask = (chips_df["price"] >= low) & (chips_df["price"] <= high)
-        prev_mask = (prev_chips_df["price"] >= low) & (prev_chips_df["price"] <= high)
+        # 计算当前价所在分箱的筹码占比
+        curr_mask = (chips_df["price"] >= bin_low) & (chips_df["price"] < bin_high)
+        prev_mask = (prev_chips_df["price"] >= bin_low) & (prev_chips_df["price"] < bin_high)
         
         curr_pct = chips_df.loc[curr_mask, "percent"].sum() if curr_mask.any() else 0
         prev_pct = prev_chips_df.loc[prev_mask, "percent"].sum() if prev_mask.any() else 0
         
         margin_change = curr_pct - prev_pct
         
-        # 方向判断（使用筹码加权平均价格）
+        # 方向判断：筹码增加的位置含义
+        # - 在当前价或更高区间增加 → 多方主动买入 ✅
+        # - 在低于当前价区间增加 → 被动承接 ⚠️
+        # - 在高于当前价区间大减 → 恐慌出逃 ❌
         if margin_change > 0:
-            prev_weighted_avg = (prev_chips_df["price"] * prev_chips_df["percent"]).sum() / prev_chips_df["percent"].sum() if prev_chips_df["percent"].sum() > 0 else 0
-            if close >= prev_weighted_avg:
+            # 计算分箱中点
+            bin_center = (bin_low + bin_high) / 2
+            if bin_center >= close * 0.99:  # 分箱中心在当前价附近或上方
                 direction = "向上集中"
             else:
                 direction = "向下承接"
