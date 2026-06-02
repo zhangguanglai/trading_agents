@@ -254,39 +254,11 @@ class ChipDeepAnalyzer:
         step, search_range = self._get_bin_params(close)
 
         # ① 边际变化（★ 高权重维度，基础分 2.0）
-        margin, margin_direction = self._calc_margin_change_v2(chips_df, prev_chips_df, close)
-        # 判断方向：在当前价或更高区间增加 → 多方主动买入 ✅
-        # 在低于当前价区间增加 → 被动承接 ⚠️
-        # 在高于当前价区间大减 → 恐慌出逃 ❌
-        margin_direction_type = "unknown"
-        if margin > 10:
-            if margin_direction == "向上集中":
-                margin_score = 2.0
-                margin_label = "✅"
-                margin_desc = "猛烈承接（多方主动买入）"
-                margin_direction_type = "active_buy"
-            else:
-                margin_score = 0.5
-                margin_label = "⚠️"
-                margin_desc = "被动承接（下方增加）"
-                margin_direction_type = "passive"
-        elif margin > 3:
-            if margin_direction == "向上集中":
-                margin_score = 0.5
-                margin_label = "⚠️"
-                margin_desc = "温和承接"
-                margin_direction_type = "mild_up"
-            else:
-                margin_score = 0.0
-                margin_label = "❌"
-                margin_desc = "无人承接"
-                margin_direction_type = "no_support"
-        else:
-            margin_score = 0.0
-            margin_label = "❌"
-            margin_desc = "无人承接"
-            margin_direction_type = "no_support"
-        margin_detail = f"当前价附近筹码{margin_direction}{margin:+.1f}个百分点，{margin_desc}"
+        # 使用技能文档 v2 完整判定树
+        margin_score, margin_label, margin_desc, panic_exit = self._calc_margin_change_v2(
+            chips_df, prev_chips_df, close
+        )
+        margin_detail = margin_desc
 
         # ② 筹码密度分布（重要维度，基础分 1.0）
         density, vacuum_risk = self._calc_chip_density_v2(chips_df, close)
@@ -436,13 +408,18 @@ class ChipDeepAnalyzer:
 
         return {
             "chip_density": {"score": density_score, "label": density_label, "detail": density_detail},
-            "margin_change": {"score": margin_score, "label": margin_label, "detail": margin_detail},
+            "margin_change": {
+                "score": margin_score, 
+                "label": margin_label, 
+                "detail": margin_detail,
+                "panic_exit": panic_exit,  # 技能文档 v2：恐慌出逃标志
+            },
             "winner_position": {"score": winner_score, "label": winner_label, "detail": winner_detail},
             "cost_rise": {"score": cost_rise_score, "label": cost_rise_label, "detail": cost_rise_detail},
             "overshoot": {"score": overshoot_score, "label": overshoot_label, "detail": overshoot_detail},
             "support_level": {"score": support_score, "label": support_label, "detail": support_detail},
             "total": total,
-            "margin_direction_type": margin_direction_type,  # 用于核心洞察
+            "margin_direction_type": "active_buy" if margin_score >= 2.0 else "mild_up" if margin_score >= 0.5 else "no_support",  # 用于核心洞察
         }
 
     def _calc_peak_cost(self, chips_df: pd.DataFrame) -> float:
@@ -549,20 +526,27 @@ class ChipDeepAnalyzer:
         
         return bin_low, bin_high
 
-    def _calc_margin_change_v2(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float) -> tuple[float, str]:
-        """计算当前价所在分箱的边际变化（技能文档推荐方法①）
+    def _calc_margin_change_v2(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float) -> tuple[float, str, str, bool]:
+        """计算当前价所在分箱的边际变化（技能文档 v2 完整判定树）
         
         核心逻辑：回答"资金在当前交易价位附近是流入还是流出？"
         
         方法：取当前价所在的分箱区间（如 [42, 44)），对比2周前后该区间的筹码占比变化。
         
-        示例：当前价 43.19 → 分箱 [42, 44) → 计算该区间的筹码变化
+        判定树（按优先级）：
+        1. chg > 10%     → 2.0分 ✅ 猛烈向上
+        2. chg >= 3%     → 0.5分 ⚠️ 温和
+        3. chg < -15%    → 检查下方分箱变化
+           - 下方大增 >10% → 0分 ❌ 恐慌出逃 + 否决项
+           - 下方无大增   → 0分 ❌ 减少
+        4. chg < 0       → 0分 ❌ 减少
+        5. |chg| < 3%    → 0分 ❌ 无人
         
         Returns:
-            (margin_change, direction): 变化百分点和方向描述
+            (score, label, detail, panic_exit): 得分、标签、描述、是否恐慌出逃
         """
         if prev_chips_df is None or prev_chips_df.empty or chips_df is None or chips_df.empty:
-            return 0, ""
+            return 0, "❌", "数据不足", False
         
         # 获取当前价所在分箱
         bin_low, bin_high = self._get_current_bin(chips_df, close)
@@ -574,26 +558,43 @@ class ChipDeepAnalyzer:
         curr_pct = chips_df.loc[curr_mask, "percent"].sum() if curr_mask.any() else 0
         prev_pct = prev_chips_df.loc[prev_mask, "percent"].sum() if prev_mask.any() else 0
         
-        margin_change = curr_pct - prev_pct
+        chg = curr_pct - prev_pct
         
-        # 方向判断：筹码增加的位置含义
-        # 核心原则：判断筹码增加的价格位置相对于当前价的方位
-        # - 分箱中心 >= 当前价 * 0.98 → 资金在当前价附近或上方买入（主动进攻）→ 向上集中 ✅
-        # - 分箱中心 < 当前价 * 0.98 → 资金在低于当前价的位置买入（被动防守）→ 向下承接 ⚠️
-        # - 在高于当前价区间大减 → 恐慌出逃 ❌
-        if margin_change > 0:
-            # 计算分箱中心位置
-            bin_center = (bin_low + bin_high) / 2
-            # 判断分箱中心是否在当前价附近或上方
-            # 阈值 0.98 允许 2% 的误差范围（考虑分箱粒度）
-            if bin_center >= close * 0.98:
-                direction = "向上集中"
+        # ┌─────────────────────────────────────────────────────────┐
+        # │           边际变化完整判定树（技能文档 v2）              │
+        # └─────────────────────────────────────────────────────────┘
+        
+        # 1. 猛烈向上：当前分箱筹码大幅增加
+        if chg > 10:
+            return 2.0, "✅", f"猛烈向上（当前分箱 +{chg:.1f}%）", False
+        
+        # 2. 温和：有承接但力度不足
+        elif chg >= 3:
+            return 0.5, "⚠️", f"温和（当前分箱 +{chg:.1f}%）", False
+        
+        # 3. 恐慌出逃检测：当前分箱大幅减少，且下方分箱大增
+        elif chg < -15:
+            # 计算下方分箱（低于当前价的所有分箱）的总变化
+            below_curr_mask = chips_df["price"] < close
+            below_prev_mask = prev_chips_df["price"] < close
+            below_curr_pct = chips_df.loc[below_curr_mask, "percent"].sum() if below_curr_mask.any() else 0
+            below_prev_pct = prev_chips_df.loc[below_prev_mask, "percent"].sum() if below_prev_mask.any() else 0
+            below_chg = below_curr_pct - below_prev_pct
+            
+            if below_chg > 10:
+                # 恐慌出逃：触发否决项
+                return 0, "❌", f"恐慌出逃（当前分箱 {chg:.1f}%，下方 +{below_chg:.1f}%）", True
             else:
-                direction = "向下承接"
-        else:
-            direction = "减少"
+                # 大幅减少但下方无承接
+                return 0, "❌", f"大幅减少（当前分箱 {chg:.1f}%）", False
         
-        return margin_change, direction
+        # 4. 减少（但不触发否决项）
+        elif chg < 0:
+            return 0, "❌", f"减少（当前分箱 {chg:.1f}%）", False
+        
+        # 5. 无人：|chg| < 3%，几乎没有变化
+        else:
+            return 0, "❌", f"无人（当前分箱 {chg:+.1f}%）", False
 
     def _is_quality_low_winner(self, perf_df: pd.DataFrame, close: float) -> bool:
         """判断是否为优质低胜率（基于量化规则）
@@ -766,14 +767,10 @@ class ChipDeepAnalyzer:
         if dim6["chip_density"]["label"] == "❌":
             return 2  # 最高2星
         
-        # 恐慌出逃检查（使用实际计算而非文字匹配）
-        # 只有当边际变化为 ❌ 时才触发恐慌出逃否决
-        if dim6["margin_change"]["label"] == "❌":
-            if chips_df is not None and prev_chips_df is not None and close > 0:
-                if self._check_panic_exit(chips_df, prev_chips_df, close):
-                    return 2
-            elif "恐慌出逃" in dim6["margin_change"]["detail"]:
-                return 2
+        # 恐慌出逃检查（使用 _calc_margin_change_v2 返回的 panic_exit 标志）
+        # 技能文档 v2：恐慌出逃已纳入判定树，统一处理
+        if dim6["margin_change"].get("panic_exit", False):
+            return 2
         
         if dim6["cost_rise"]["label"] == "❌":
             return 2
