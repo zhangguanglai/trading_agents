@@ -41,6 +41,7 @@ export interface PriceStage {
 export interface ChipDeepResult {
     meta: {
         symbol: string
+        name?: string
         analysis_date: string
         data_date?: string
         lookback_days?: number

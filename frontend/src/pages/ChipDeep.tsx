@@ -118,7 +118,7 @@ function SummaryCard({ result }: { result: ChipDeepResult }) {
         <div className="card">
             <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-black text-slate-900 dark:text-white">
-                    {meta.symbol} <span className="text-sm font-normal text-slate-500">筹码分析报告</span>
+                    {meta.name ? `${meta.name} (${meta.symbol})` : meta.symbol} <span className="text-sm font-normal text-slate-500">筹码分析报告</span>
                 </h2>
                 <span className="text-2xl">{stars}</span>
             </div>

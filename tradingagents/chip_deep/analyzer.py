@@ -33,16 +33,19 @@ class ChipDeepAnalyzer:
 
     async def analyze(self) -> ChipDeepResult:
         """执行完整分析流程"""
+        # 0. 获取股票名称
+        stock_name = await self._get_stock_name()
+
         # 1. 获取筹码性能指标 (cyq_perf)
         perf_df = await self._get_cyq_perf()
         if perf_df is None or perf_df.empty:
-            return self._build_error_result("筹码性能数据获取失败")
+            return self._build_error_result("筹码性能数据获取失败", stock_name)
 
         # 2. 获取最新日期的筹码分布 (cyq_chips)
         latest_date = perf_df["trade_date"].max()
         chips_df = await self._get_cyq_chips(latest_date)
         if chips_df is None or chips_df.empty:
-            return self._build_error_result("筹码分布数据获取失败")
+            return self._build_error_result("筹码分布数据获取失败", stock_name)
 
         # 3. 获取2周前的筹码分布（边际变化）
         prev_date = self._get_prev_trade_date(perf_df, latest_date, days=14)
@@ -55,7 +58,25 @@ class ChipDeepAnalyzer:
         dim6 = self._calc_dim6(perf_df, chips_df, prev_chips_df, close_price)
 
         # 6. 构建结果
-        return self._build_result(perf_df, chips_df, prev_chips_df, dim6, close_price)
+        return self._build_result(perf_df, chips_df, prev_chips_df, dim6, close_price, stock_name)
+
+    async def _get_stock_name(self) -> str:
+        """获取股票名称（使用 Tushare stock_basic 接口）"""
+        try:
+            from tradingagents.dataflows.providers.cn_tushare_provider import CnTushareProvider
+            provider = CnTushareProvider()
+            provider._init_ts()
+            ts_code = provider._to_tushare_code(self.symbol)
+            df = provider._call_with_retry(
+                provider._ts.stock_basic,
+                ts_code=ts_code,
+                fields="ts_code,name"
+            )
+            if df is not None and not df.empty:
+                return str(df.iloc[0].get("name", ""))
+        except Exception as e:
+            print(f"[chip-deep] get_stock_name error: {e}")
+        return ""
 
     async def _get_cyq_perf(self) -> Optional[pd.DataFrame]:
         """获取筹码性能指标（带缓存）"""
@@ -503,7 +524,7 @@ class ChipDeepAnalyzer:
         
         return 5  # 无否决项，正常评级
 
-    def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict, close_price: float = 0) -> ChipDeepResult:
+    def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict, close_price: float = 0, stock_name: str = "") -> ChipDeepResult:
         """构建完整分析结果"""
         latest = perf_df.iloc[-1]
         # 使用筹码峰位成本作为平均成本，而不是 weight_avg（历史加权平均会被低价筹码拉低）
@@ -566,6 +587,7 @@ class ChipDeepAnalyzer:
         return ChipDeepResult(
             meta={
                 "symbol": self.symbol,
+                "name": stock_name,
                 "analysis_date": datetime.now().strftime("%Y-%m-%d"),
                 "data_date": str(latest.get("trade_date", "")),
                 "lookback_days": self.lookback_days,
@@ -595,6 +617,12 @@ class ChipDeepAnalyzer:
             detailed_summary=detailed_summary,
         )
 
+    def _format_date(self, date_str: str) -> str:
+        """将 YYYYMMDD 格式转换为 YYYY-MM-DD"""
+        if len(date_str) == 8 and date_str.isdigit():
+            return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+        return date_str
+
     def _calc_price_stages(self, perf_df: pd.DataFrame) -> List[PriceStage]:
         """计算价格走势阶段（大涨、回调等）"""
         if len(perf_df) < 30:
@@ -608,8 +636,8 @@ class ChipDeepAnalyzer:
         # 阶段1：从起点到最高点（大涨）
         start_price = float(perf_df.iloc[0].get("close", perf_df.iloc[0].get("weight_avg", 0)))
         max_price = float(perf_df.loc[max_idx].get("close", perf_df.loc[max_idx].get("weight_avg", 0)))
-        max_date = str(perf_df.loc[max_idx].get("trade_date", ""))
-        start_date = str(perf_df.iloc[0].get("trade_date", ""))
+        max_date = self._format_date(str(perf_df.loc[max_idx].get("trade_date", "")))
+        start_date = self._format_date(str(perf_df.iloc[0].get("trade_date", "")))
         
         if max_price > start_price * 1.2:  # 涨幅超过20%
             stages.append(PriceStage(
@@ -626,7 +654,7 @@ class ChipDeepAnalyzer:
         # 阶段2：从最高点到最新（回调）
         latest = perf_df.iloc[-1]
         latest_price = float(latest.get("close", latest.get("weight_avg", 0)))
-        latest_date = str(latest.get("trade_date", ""))
+        latest_date = self._format_date(str(latest.get("trade_date", "")))
         
         if latest_price < max_price * 0.9:  # 回调超过10%
             stages.append(PriceStage(
@@ -684,83 +712,125 @@ class ChipDeepAnalyzer:
         total = dim6["total"]
         rating = min(5, max(1, total + 1))
         stars = "⭐" * rating
-        
+
         # 预计算价格状态
         price_diff = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
         price_status = "高于" if price_diff > 0 else "低于"
-        
+
         # 价格走势
         stages = self._calc_price_stages(perf_df)
         price_trend = ""
         if stages:
             for stage in stages:
-                price_trend += f"{stage.name}：{stage.start_price}→{stage.end_price}（{stage.change_pct:+.1f}%）\n"
-        
-        # 筹码结构描述
+                price_trend += f"• {stage.name}：{stage.start_date} ~ {stage.end_date}，{stage.start_price} → {stage.end_price}（{stage.change_pct:+.1f}%），获利盘 {stage.winner_rate_start:.1f}% → {stage.winner_rate_end:.1f}%\n"
+        else:
+            price_trend = "• 暂无显著趋势阶段\n"
+
+        # 最新价格与成本
+        latest = perf_df.iloc[-1]
+        latest_date = self._format_date(str(latest.get("trade_date", "")))
+        cost_5pct = float(latest.get("cost_5pct", 0))
+        cost_50pct = float(latest.get("cost_50pct", 0))
+        cost_95pct = float(latest.get("cost_95pct", 0))
+
+        # 筹码结构描述（更详细）
         chip_structure = ""
         if chips_df is not None and not chips_df.empty:
-            # 找到主要筹码区间
-            chips_sorted = chips_df.sort_values("percent", ascending=False).head(3)
+            # 找到主要筹码区间（前5大筹码集中区）
+            chips_sorted = chips_df.sort_values("percent", ascending=False).head(5)
             chip_zones = []
-            for _, row in chips_sorted.iterrows():
+            for i, (_, row) in enumerate(chips_sorted.iterrows(), 1):
                 price = row["price"]
                 pct = row["percent"]
-                chip_zones.append(f"[{price-1:.0f},{price+1:.0f}) {pct:.1f}%")
-            chip_structure = "、".join(chip_zones)
-        
+                chip_zones.append(f"  {i}. [{price-1:.1f}, {price+1:.1f}) 占比 {pct:.2f}%")
+            chip_structure = "\n".join(chip_zones)
+        else:
+            chip_structure = "  数据不可用"
+
+        # 筹码集中度
+        if cost_5pct > 0 and cost_95pct > 0:
+            concentration = cost_95pct - cost_5pct
+            if concentration < 20:
+                conc_desc = "高度集中"
+            elif concentration < 40:
+                conc_desc = "中度集中"
+            else:
+                conc_desc = "分散"
+            chip_concentration = f"5%成本位: {cost_5pct:.2f} | 50%成本位: {cost_50pct:.2f} | 95%成本位: {cost_95pct:.2f}\n筹码集中度(95%-5%): {concentration:.2f}（{conc_desc}）"
+        else:
+            chip_concentration = "筹码集中度数据不可用"
+
         # 边际变化描述
         margin_desc = ""
         if margin_change:
-            top_changes = sorted(margin_change, key=lambda x: abs(x.change), reverse=True)[:2]
+            top_changes = sorted(margin_change, key=lambda x: abs(x.change), reverse=True)[:5]
             changes = []
             for item in top_changes:
                 direction = "↑" if item.change > 0 else "↓"
-                changes.append(f"[{item.price_low:.0f},{item.price_high:.0f}){direction}{abs(item.change):.1f}%")
-            margin_desc = "、".join(changes)
-        
-        # 六维判定
+                changes.append(f"  [{item.price_low:.1f}, {item.price_high:.1f}) {item.prev_pct:.1f}% → {item.curr_pct:.1f}% ({direction}{abs(item.change):.1f}%)")
+            margin_desc = "\n".join(changes)
+        else:
+            margin_desc = "  变化平缓或数据不足"
+
+        # 六维判定（更详细）
         judgments = []
         dim_names = {
-            "chip_density": "筹码密度",
-            "margin_change": "边际变化", 
-            "winner_position": "获利盘",
-            "cost_rise": "成本抬升",
-            "overshoot": "超跌程度",
-            "support_level": "下方支撑",
+            "chip_density": "① 筹码密度",
+            "margin_change": "② 边际变化",
+            "winner_position": "③ 获利盘",
+            "cost_rise": "④ 成本抬升",
+            "overshoot": "⑤ 超跌程度",
+            "support_level": "⑥ 下方支撑",
         }
         for key, name in dim_names.items():
-            score = dim6[key]["score"]
-            label = "底部" if score else ("中性" if key == "cost_rise" or key == "support_level" else "")
-            if label:
-                judgments.append(f"{name}：{label}")
-        
+            item = dim6[key]
+            score = item["score"]
+            label = item["label"]
+            detail = item["detail"]
+            status = "通过" if score else "未通过"
+            judgments.append(f"  {name} {label} | {status}\n    {detail}")
+
+        judgments_text = "\n\n".join(judgments) if judgments else "  暂无明确信号"
+
         # 生成详细总结
-        price_trend_text = price_trend if price_trend else "暂无显著趋势"
-        chip_structure_text = chip_structure if chip_structure else "数据不可用"
-        margin_desc_text = margin_desc if margin_desc else "变化平缓"
-        judgments_text = "\n".join(judgments) if judgments else "暂无明确信号"
-        
-        detailed = f"""## 价格走势
-{price_trend_text}
+        detailed = f"""═══════════════════════════════════════
+📊 筹码深度分析报告
+═══════════════════════════════════════
 
-## 最新筹码结构
-{chip_structure_text}
+【一、价格走势总览】
+{price_trend}
+【二、最新价格与成本】（数据日期: {latest_date}）
+  当前收盘价: {close:.2f}
+  加权平均成本: {weight_avg:.2f}
+  价格偏离成本: {price_diff:+.1f}%（{price_status}成本）
+  获利盘比例: {winner_rate:.1f}%
 
-## 边际变化
-{margin_desc_text}
+【三、筹码结构分布】
+{chip_structure}
 
-## 综合判断
+【四、筹码集中度】
+{chip_concentration}
+
+【五、2周边际变化】
+{margin_desc}
+
+【六、六维评分详解】
 {judgments_text}
 
-## 一句话总结
-当前价 {close:.2f} {price_status}平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}%。六维评分 {total}/6，评级 {stars}。"""
-        
+═══════════════════════════════════════
+【综合评级】{stars}（{total}/6 分）
+═══════════════════════════════════════
+
+【一句话总结】
+当前价 {close:.2f} {price_status}平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}%。六维评分 {total}/6，评级 {stars}。
+"""
+
         return detailed
 
-    def _build_error_result(self, reason: str) -> ChipDeepResult:
+    def _build_error_result(self, reason: str, stock_name: str = "") -> ChipDeepResult:
         """构建错误结果"""
         return ChipDeepResult(
-            meta={"symbol": self.symbol, "error": reason},
+            meta={"symbol": self.symbol, "name": stock_name, "error": reason},
             current={},
             chip_distribution=[],
             margin_change_2w=[],
