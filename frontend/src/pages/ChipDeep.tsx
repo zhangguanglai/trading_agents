@@ -131,7 +131,7 @@ function SummaryCard({ result }: { result: ChipDeepResult }) {
                 <MetricItem label="当前价" value={`${current.close?.toFixed(2) || '-'}`} />
                 <MetricItem label="平均成本" value={`${current.weight_avg?.toFixed(2) || '-'}`} />
                 <MetricItem label="获利盘" value={`${current.winner_rate?.toFixed(1) || '-'}%`} />
-                <MetricItem label="六维评分" value={`${dim6_total}/6`} highlight={dim6_total >= 4} />
+                <MetricItem label="六维评分" value={`${dim6_total}/5.5`} highlight={dim6_total >= 4} />
             </div>
         </div>
     )

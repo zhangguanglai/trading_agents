@@ -21,8 +21,8 @@ class MarginChangeItem(BaseModel):
 
 
 class Dim6ScoreItem(BaseModel):
-    """六维评分单项"""
-    score: int = Field(..., ge=0, le=1, description="0=否, 1=是")
+    """六维评分单项（加权版，支持0, 0.25, 0.5, 1.0, 2.0）"""
+    score: float = Field(..., ge=0, le=2.0, description="加权得分")
     label: str = Field(..., description="✅/⚠️/❌")
     detail: str = Field(..., description="详细说明")
 
@@ -64,7 +64,7 @@ class ChipDeepResult(BaseModel):
     chip_distribution: List[ChipDistributionItem] = Field(..., description="筹码分布")
     margin_change_2w: List[MarginChangeItem] = Field(..., description="2周边际变化")
     dim6_score: Dim6Score = Field(..., description="六维评分")
-    dim6_total: int = Field(..., ge=0, le=6, description="六维总分")
+    dim6_total: float = Field(..., ge=0, le=5.5, description="六维加权总分 0~5.5")
     rating: int = Field(..., ge=1, le=5, description="综合评级 1-5星")
     summary_text: str = Field(..., description="一句话总结")
     detailed_summary: str = Field(default="", description="详细分析总结（参考范例格式）")
