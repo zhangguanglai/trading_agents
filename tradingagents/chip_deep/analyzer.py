@@ -45,24 +45,32 @@ class ChipDeepAnalyzer:
         # 确保数据按日期正序排列（旧→新），所有后续方法都依赖这个顺序
         perf_df = perf_df.sort_values("trade_date").reset_index(drop=True)
 
-        # 2. 获取最新日期的筹码分布 (cyq_chips)
+        # 2. 获取最新交易日（优先使用 daily 接口的最新日期，确保数据一致性）
         latest_date = perf_df["trade_date"].max()
+        
+        # 尝试获取 daily 数据的最新日期（可能比 cyq_perf 更新）
+        daily_latest_date = await self._get_daily_latest_date()
+        if daily_latest_date and daily_latest_date > latest_date:
+            latest_date = daily_latest_date
+            print(f"[chip-deep] 使用 daily 接口的最新日期: {latest_date}")
+
+        # 3. 获取最新日期的筹码分布 (cyq_chips)
         chips_df = await self._get_cyq_chips(latest_date)
         if chips_df is None or chips_df.empty:
             return self._build_error_result("筹码分布数据获取失败", stock_name)
 
-        # 3. 获取2周前的筹码分布（边际变化）
+        # 4. 获取2周前的筹码分布（边际变化）
         prev_date = self._get_prev_trade_date(perf_df, latest_date, days=14)
         prev_chips_df = await self._get_cyq_chips(prev_date) if prev_date else None
 
-        # 4. 获取最新收盘价 (daily 接口)
+        # 5. 获取最新收盘价 (daily 接口)
         close_price = await self._get_close_price(latest_date)
 
-        # 5. 计算六维评分
+        # 6. 计算六维评分
         dim6 = self._calc_dim6(perf_df, chips_df, prev_chips_df, close_price)
 
-        # 6. 构建结果
-        return self._build_result(perf_df, chips_df, prev_chips_df, dim6, close_price, stock_name)
+        # 7. 构建结果
+        return self._build_result(perf_df, chips_df, prev_chips_df, dim6, close_price, stock_name, latest_date)
 
     async def _get_stock_name(self) -> str:
         """获取股票名称（使用 Tushare stock_basic 接口）"""
@@ -159,6 +167,41 @@ class ChipDeepAnalyzer:
         except Exception as e:
             print(f"[chip-deep] get_close_price error: {e}")
         return 0
+
+    async def _get_daily_latest_date(self) -> Optional[str]:
+        """获取 daily 接口的最新交易日（YYYYMMDD格式）
+        
+        注意：Tushare 返回的数据是按日期降序排列（最新在前），
+        所以取第一条数据即为最新日期。
+        """
+        try:
+            from tradingagents.dataflows.providers.cn_tushare_provider import CnTushareProvider
+            provider = CnTushareProvider()
+            # 获取最近一个交易日的数据
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            result = provider.get_stock_data(self.symbol, start_date, end_date)
+            if result is not None:
+                import json
+                if isinstance(result, str):
+                    try:
+                        data = json.loads(result)
+                        if isinstance(data, list) and len(data) > 0:
+                            # Tushare 返回的数据按日期降序排列，第一条即为最新
+                            latest_date = data[0].get("date", "")
+                            if latest_date:
+                                # 转换为 YYYYMMDD 格式
+                                return latest_date.replace("-", "")
+                    except json.JSONDecodeError:
+                        pass
+                elif isinstance(result, pd.DataFrame) and not result.empty:
+                    # DataFrame 也是按日期降序排列
+                    latest_date = result.iloc[0].get("date", "")
+                    if latest_date:
+                        return str(latest_date).replace("-", "")
+        except Exception as e:
+            print(f"[chip-deep] get_daily_latest_date error: {e}")
+        return None
 
     def _get_prev_trade_date(self, perf_df: pd.DataFrame, latest_date: str, days: int = 14) -> Optional[str]:
         """从 perf_df 中获取 N 天前的交易日"""
@@ -575,7 +618,7 @@ class ChipDeepAnalyzer:
         
         return 5  # 无否决项，正常评级
 
-    def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict, close_price: float = 0, stock_name: str = "") -> ChipDeepResult:
+    def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict, close_price: float = 0, stock_name: str = "", latest_date: str = "") -> ChipDeepResult:
         """构建完整分析结果"""
         latest = perf_df.iloc[-1]
         # 使用筹码峰位成本作为平均成本，而不是 weight_avg（历史加权平均会被低价筹码拉低）
@@ -583,6 +626,8 @@ class ChipDeepAnalyzer:
         weight_avg = peak_cost
         close = close_price if close_price > 0 else weight_avg
         winner_rate = float(latest.get("winner_rate", 0))
+        # 使用传入的最新日期（优先使用 daily 接口的日期）
+        data_date = latest_date if latest_date else str(latest.get("trade_date", ""))
 
         # 筹码分布数据格式化
         chip_dist = []
@@ -643,7 +688,7 @@ class ChipDeepAnalyzer:
                 "symbol": self.symbol,
                 "name": stock_name,
                 "analysis_date": datetime.now().strftime("%Y-%m-%d"),
-                "data_date": str(latest.get("trade_date", "")),
+                "data_date": data_date,
                 "lookback_days": self.lookback_days,
             },
             current={
