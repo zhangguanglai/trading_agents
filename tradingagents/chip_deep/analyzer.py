@@ -540,6 +540,21 @@ class ChipDeepAnalyzer:
         mask = chips_df["price"] <= support_price
         return chips_df.loc[mask, "percent"].sum() if mask.any() else 0
 
+    def _calc_base_rating(self, total: int) -> int:
+        """计算基础评级（评分与评级非线性映射）
+        
+        映射关系：
+        - 6/6 → ⭐⭐⭐⭐⭐ (5星) 完美
+        - 5/6 → ⭐⭐⭐⭐⭐ (5星) 优秀
+        - 4/6 → ⭐⭐⭐⭐ (4星) 良好
+        - 3/6 → ⭐⭐⭐ (3星) 一般
+        - 2/6 → ⭐⭐ (2星) 较弱
+        - 1/6 → ⭐ (1星) 差
+        - 0/6 → ⭐ (1星) 极差
+        """
+        rating_map = {6: 5, 5: 5, 4: 4, 3: 3, 2: 2, 1: 1, 0: 1}
+        return rating_map.get(total, 1)
+
     def _apply_veto_rules(self, dim6: dict) -> int:
         """应用否决项规则（基于量化规则）
         
@@ -608,7 +623,7 @@ class ChipDeepAnalyzer:
 
         # 评级计算（应用否决项规则）
         max_rating = self._apply_veto_rules(dim6)
-        base_rating = min(5, max(1, dim6["total"] + 1))
+        base_rating = self._calc_base_rating(dim6["total"])
         rating = min(base_rating, max_rating)
 
         # 总结文字
@@ -742,9 +757,9 @@ class ChipDeepAnalyzer:
     def _generate_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict) -> str:
         """生成分析总结（参考范例格式）"""
         total = dim6["total"]
-        # 应用与 _build_result 相同的否决规则，确保一致性
+        # 应用与 _build_result 相同的计算逻辑，确保一致性
         max_rating = self._apply_veto_rules(dim6)
-        base_rating = min(5, max(1, total + 1))
+        base_rating = self._calc_base_rating(total)
         rating = min(base_rating, max_rating)
         stars = "⭐" * rating
 
@@ -897,9 +912,9 @@ class ChipDeepAnalyzer:
     def _generate_detailed_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, perf_df: pd.DataFrame, chips_df: pd.DataFrame, margin_change: List[MarginChangeItem]) -> str:
         """生成详细分析总结（参考范例格式）"""
         total = dim6["total"]
-        # 应用与 _build_result 相同的否决规则，确保一致性
+        # 应用与 _build_result 相同的计算逻辑，确保一致性
         max_rating = self._apply_veto_rules(dim6)
-        base_rating = min(5, max(1, total + 1))
+        base_rating = self._calc_base_rating(total)
         rating = min(base_rating, max_rating)
         stars = "⭐" * rating
 
