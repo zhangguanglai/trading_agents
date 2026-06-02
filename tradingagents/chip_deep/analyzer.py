@@ -577,13 +577,13 @@ class ChipDeepAnalyzer:
         margin_change = curr_pct - prev_pct
         
         # 方向判断：筹码增加的位置含义
-        # - 在当前价或更高区间增加 → 多方主动买入 ✅
-        # - 在低于当前价区间增加 → 被动承接 ⚠️
+        # - 当前价所在分箱或更高分箱增加 → 多方主动买入 ✅
+        # - 低于当前价的分箱增加 → 被动承接 ⚠️
         # - 在高于当前价区间大减 → 恐慌出逃 ❌
         if margin_change > 0:
-            # 计算分箱中点
-            bin_center = (bin_low + bin_high) / 2
-            if bin_center >= close * 0.99:  # 分箱中心在当前价附近或上方
+            # 判断当前价所在分箱是否在当前价附近或上方
+            # 当前价 31.58 在分箱 [30,32) 内 → 视为向上集中
+            if close >= bin_low:  # 当前价在分箱内或分箱下方
                 direction = "向上集中"
             else:
                 direction = "向下承接"
