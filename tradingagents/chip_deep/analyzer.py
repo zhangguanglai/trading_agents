@@ -225,30 +225,44 @@ class ChipDeepAnalyzer:
             margin_desc = "无人承接"
         margin_detail = f"当前价附近筹码{margin_direction}{margin:+.1f}个百分点，{margin_desc}"
 
-        # ③ 获利盘（细化区间）
-        if 20 <= winner_rate <= 60:
+        # ③ 获利盘（精细化区间）
+        # 35%-50%: 黄金区间，主力控盘理想状态
+        # 20%-35%: 偏冷，可能是机会区
+        # 50%-65%: 偏暖，需警惕
+        # <20%: 需区分是主力洗盘还是弱势股
+        # 65%-80%: 过热，减仓信号
+        # >80%: 极度过热，高风险
+        if 35 <= winner_rate <= 50:
             winner_score = 1
             winner_label = "✅"
-            winner_desc = "均衡" if winner_rate >= 40 else "偏冷"
+            winner_desc = "健康均衡（黄金区间）"
+        elif 20 <= winner_rate < 35:
+            winner_score = 1
+            winner_label = "✅"
+            winner_desc = "偏冷（机会区）"
+        elif 50 < winner_rate <= 65:
+            winner_score = 0
+            winner_label = "⚠️"
+            winner_desc = "偏暖（谨慎）"
         elif winner_rate < 20:
             # 区分优质/劣质低胜率
             is_quality = self._is_quality_low_winner(perf_df, close)
             if is_quality:
                 winner_score = 1
                 winner_label = "✅"
-                winner_desc = "优质低胜率"
+                winner_desc = "优质低胜率（主力洗盘）"
             else:
                 winner_score = 0
                 winner_label = "❌"
-                winner_desc = "劣质低胜率"
-        elif winner_rate > 80:
+                winner_desc = "劣质低胜率（弱势股）"
+        elif 65 < winner_rate <= 80:
             winner_score = 0
             winner_label = "⚠️"
-            winner_desc = "过热"
-        else:
-            winner_score = 1
-            winner_label = "✅"
-            winner_desc = "偏暖"
+            winner_desc = "过热（减仓信号）"
+        else:  # > 80%
+            winner_score = 0
+            winner_label = "❌"
+            winner_desc = "极度过热（高风险）"
         winner_detail = f"获利盘 {winner_rate:.1f}%，{winner_desc}"
 
         # ④ 成本抬升（250日数据，对比股价涨幅）
@@ -271,32 +285,39 @@ class ChipDeepAnalyzer:
             cost_rise_desc = "底部基本没变"
         cost_rise_detail = f"成本抬升{cost_rise:.1f}%，股价涨幅{price_rise:.1f}%，{cost_rise_type}，{cost_rise_desc}"
 
-        # ⑤ 超跌程度（细化区间）
+        # ⑤ 价格偏离程度（区分超跌和超买）
+        # 负值 = 当前价低于成本（超跌），正值 = 当前价高于成本（超买）
         overshoot = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
-        if abs(overshoot) <= 5:
+        if -5 <= overshoot <= 5:
+            # 价格在成本附近 ±5%，合理区间
             overshoot_score = 1
             overshoot_label = "✅"
-            overshoot_desc = "正常波动"
-        elif -20 <= overshoot < -10:
+            overshoot_desc = "价格合理"
+        elif -15 <= overshoot < -5:
+            # 轻度到中度超跌，机会区
             overshoot_score = 1
             overshoot_label = "✅"
-            overshoot_desc = "中度超跌（机会区）"
-        elif overshoot < -20:
+            overshoot_desc = "超跌机会区"
+        elif overshoot < -15:
+            # 深度超跌，反弹概率高
             overshoot_score = 1
             overshoot_label = "✅"
-            overshoot_desc = "极度超跌"
-        elif -10 <= overshoot < -5:
+            overshoot_desc = "深度超跌（反弹概率高）"
+        elif 5 < overshoot <= 10:
+            # 轻度偏高
             overshoot_score = 0
             overshoot_label = "⚠️"
-            overshoot_desc = "轻度超跌"
-        elif 5 < overshoot <= 15:
+            overshoot_desc = "轻度偏高"
+        elif 10 < overshoot <= 20:
+            # 明显偏高，追高风险
             overshoot_score = 0
             overshoot_label = "⚠️"
-            overshoot_desc = "偏高"
-        else:  # > 15%
+            overshoot_desc = "明显偏高（追高风险）"
+        else:  # > 20%
+            # 严重超买，强烈卖出信号
             overshoot_score = 0
             overshoot_label = "❌"
-            overshoot_desc = "极度过热"
+            overshoot_desc = "严重超买（强烈卖出信号）"
         overshoot_detail = f"当前价 {close:.2f} vs 均成本 {weight_avg:.2f} ({overshoot:+.1f}%)，{overshoot_desc}"
 
         # ⑥ 下方支撑（多层支撑判断）
@@ -462,10 +483,13 @@ class ChipDeepAnalyzer:
             price_rise = 0
         
         # 判断类型
+        # cost_rise > price_rise: 主力成本抬升快于股价 → 主力在吸筹
+        # cost_rise < price_rise: 股价涨速快于成本 → 散户追高
+        # abs(diff) <= 10: 两者同步 → 健康换手
         diff = cost_rise - price_rise
         if abs(diff) <= 10:
             type_desc = "健康换手型"
-        elif cost_rise < price_rise:
+        elif cost_rise > price_rise:
             type_desc = "底部抬升型"
         else:
             type_desc = "追高套牢型"
@@ -475,21 +499,29 @@ class ChipDeepAnalyzer:
     def _calc_support_levels_v2(self, chips_df: pd.DataFrame, close: float) -> List[dict]:
         """计算多层支撑位（基于量化规则）
         
+        支撑位定义：从当前价向下，筹码密集的价格区间。
+        这些位置有较多持仓者，下跌时可能产生承接。
+        
         Returns:
             List[dict]: 支撑层级列表，每个包含价格和跌幅
         """
         if chips_df is None or chips_df.empty:
             return []
         
-        # 按价格排序并计算累计筹码
-        df_sorted = chips_df.sort_values("price")
-        cum = df_sorted["percent"].cumsum()
+        # 筛选当前价下方的筹码，按价格降序排列（从高到低）
+        df_below = chips_df[chips_df["price"] <= close].sort_values("price", ascending=False)
+        if df_below.empty:
+            return []
+        
+        # 从当前价向下累计筹码
+        cum = df_below["percent"].cumsum()
         
         support_levels = []
         for pct_target in [5, 10, 15, 20]:
             mask = cum >= pct_target
             if mask.any():
-                support_price = df_sorted[mask]["price"].iloc[0]
+                # 取最后一个满足条件的价格（离当前价最近的支撑位）
+                support_price = df_below[mask]["price"].iloc[-1]
                 drop_pct = (1 - support_price / close) * 100
                 support_levels.append({
                     "pct": pct_target,
@@ -755,12 +787,21 @@ class ChipDeepAnalyzer:
         winner_score = dim6["winner_position"]["score"]
         cost_rise_score = dim6["cost_rise"]["score"]
         
-        if density_score and margin_score and winner_score and cost_rise_score:
-            insights.append(CoreInsight(
-                title="主力吸筹信号明显",
-                content=f"当前价 {close:.2f} 低于平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘仅 {winner_rate:.1f}%。筹码密度达标且边际变化积极，成本持续抬升，表明主力资金正在低位吸筹，后续上涨概率较大。",
-                level="success"
-            ))
+        # 主力吸筹核心条件：筹码集中 + 获利盘低/合理 + 成本抬升
+        # 边际变化是辅助确认信号，非必要条件
+        if density_score and winner_score and cost_rise_score:
+            if margin_score:
+                insights.append(CoreInsight(
+                    title="主力吸筹信号强烈",
+                    content=f"当前价 {close:.2f} 低于平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}%。筹码集中、成本持续抬升且边际变化积极，表明主力资金正在积极吸筹，后续上涨概率较大。",
+                    level="success"
+                ))
+            else:
+                insights.append(CoreInsight(
+                    title="主力吸筹迹象（待确认）",
+                    content=f"当前价 {close:.2f} 低于平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}%。筹码集中且成本抬升，但边际变化尚不明显，可能是吸筹初期，建议持续观察。",
+                    level="info"
+                ))
         elif not density_score and not margin_score:
             insights.append(CoreInsight(
                 title="筹码分散，观望为主",
