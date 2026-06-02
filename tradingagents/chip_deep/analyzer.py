@@ -618,9 +618,30 @@ class ChipDeepAnalyzer:
         )
 
     def _format_date(self, date_str: str) -> str:
-        """将 YYYYMMDD 格式转换为 YYYY-MM-DD"""
+        """将日期格式统一转换为 YYYY-MM-DD
+        
+        支持输入格式:
+        - YYYYMMDD (如 20250602)
+        - YYYY-MM-DD (如 2025-06-02)
+        - YYYY/MM/DD (如 2025/06/02)
+        """
+        if not date_str or date_str == "nan":
+            return ""
+        
+        date_str = str(date_str).strip()
+        
+        # 已经是 YYYY-MM-DD 格式
+        if len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-':
+            return date_str
+        
+        # YYYY/MM/DD 格式
+        if len(date_str) == 10 and date_str[4] == '/' and date_str[7] == '/':
+            return date_str.replace('/', '-')
+        
+        # YYYYMMDD 格式
         if len(date_str) == 8 and date_str.isdigit():
             return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+        
         return date_str
 
     def _calc_price_stages(self, perf_df: pd.DataFrame) -> List[PriceStage]:
@@ -628,18 +649,25 @@ class ChipDeepAnalyzer:
         if len(perf_df) < 30:
             return []
         
+        # 确保数据按日期正序排列（旧→新）
+        df = perf_df.sort_values("trade_date").reset_index(drop=True)
+        
         stages = []
-        # 找到最高点和最低点
-        max_idx = perf_df["close"].idxmax() if "close" in perf_df.columns else perf_df["weight_avg"].idxmax()
-        min_idx = perf_df["close"].idxmin() if "close" in perf_df.columns else perf_df["weight_avg"].idxmin()
+        
+        # 使用 weight_avg 作为价格（cyq_perf 没有 close 列）
+        price_col = "close" if "close" in df.columns else "weight_avg"
+        
+        # 找到最高点的索引（在正序数据中）
+        max_idx = df[price_col].idxmax()
         
         # 阶段1：从起点到最高点（大涨）
-        start_price = float(perf_df.iloc[0].get("close", perf_df.iloc[0].get("weight_avg", 0)))
-        max_price = float(perf_df.loc[max_idx].get("close", perf_df.loc[max_idx].get("weight_avg", 0)))
-        max_date = self._format_date(str(perf_df.loc[max_idx].get("trade_date", "")))
-        start_date = self._format_date(str(perf_df.iloc[0].get("trade_date", "")))
+        start_price = float(df.iloc[0].get(price_col, 0))
+        max_price = float(df.loc[max_idx].get(price_col, 0))
+        max_date = self._format_date(str(df.loc[max_idx].get("trade_date", "")))
+        start_date = self._format_date(str(df.iloc[0].get("trade_date", "")))
         
-        if max_price > start_price * 1.2:  # 涨幅超过20%
+        # 确保最高点不在最开始（至少有30天涨幅才认为是"大涨"阶段）
+        if max_idx >= 30 and max_price > start_price * 1.2:  # 涨幅超过20%
             stages.append(PriceStage(
                 name="大涨",
                 start_date=start_date,
@@ -647,16 +675,17 @@ class ChipDeepAnalyzer:
                 start_price=round(start_price, 2),
                 end_price=round(max_price, 2),
                 change_pct=round((max_price - start_price) / start_price * 100, 1),
-                winner_rate_start=float(perf_df.iloc[0].get("winner_rate", 0)),
-                winner_rate_end=float(perf_df.loc[max_idx].get("winner_rate", 0)),
+                winner_rate_start=float(df.iloc[0].get("winner_rate", 0)),
+                winner_rate_end=float(df.loc[max_idx].get("winner_rate", 0)),
             ))
         
         # 阶段2：从最高点到最新（回调）
-        latest = perf_df.iloc[-1]
-        latest_price = float(latest.get("close", latest.get("weight_avg", 0)))
+        latest = df.iloc[-1]
+        latest_price = float(latest.get(price_col, 0))
         latest_date = self._format_date(str(latest.get("trade_date", "")))
         
-        if latest_price < max_price * 0.9:  # 回调超过10%
+        # 确保最新日期在最高点之后，且回调超过10%
+        if max_idx < len(df) - 1 and latest_price < max_price * 0.9:
             stages.append(PriceStage(
                 name="深度回调",
                 start_date=max_date,
@@ -664,7 +693,7 @@ class ChipDeepAnalyzer:
                 start_price=round(max_price, 2),
                 end_price=round(latest_price, 2),
                 change_pct=round((latest_price - max_price) / max_price * 100, 1),
-                winner_rate_start=float(perf_df.loc[max_idx].get("winner_rate", 0)),
+                winner_rate_start=float(df.loc[max_idx].get("winner_rate", 0)),
                 winner_rate_end=float(latest.get("winner_rate", 0)),
             ))
         
