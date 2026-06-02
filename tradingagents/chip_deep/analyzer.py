@@ -925,13 +925,16 @@ class ChipDeepAnalyzer:
         margin_has_score = dim6["margin_change"]["score"]
         margin_desc = "有资金在主动买入" if margin_has_score else "筹码变化平缓"
 
-        # 底部特征
+        # 底部特征（基于实际指标值判断，而非 score 的 truthy 值）
         bottom_signals = []
-        if dim6["winner_position"]["score"]:
+        # 获利盘偏冷：winner_rate < 40%（低于均衡区间）
+        if winner_rate < 40:
             bottom_signals.append("获利盘偏冷")
-        if dim6["overshoot"]["score"]:
+        # 当前价低于平均成本：price_diff < 0
+        if price_diff < 0:
             bottom_signals.append("当前价低于平均成本")
-        if dim6["support_level"]["score"]:
+        # 下方有筹码支撑：支撑层级得分 > 0
+        if dim6["support_level"]["score"] > 0:
             bottom_signals.append("下方有筹码支撑")
 
         bottom_text = "，".join(bottom_signals) if bottom_signals else "底部特征不明显"
@@ -951,10 +954,10 @@ class ChipDeepAnalyzer:
         winner_score = dim6["winner_position"]["score"]
         cost_rise_score = dim6["cost_rise"]["score"]
         
-        # 主力吸筹核心条件：筹码集中 + 获利盘低/合理 + 成本抬升
+        # 主力吸筹核心条件：筹码集中 + 获利盘低/合理 + 成本抬升 + 当前价低于成本
         # 边际变化是辅助确认信号，非必要条件
-        if density_score and winner_score and cost_rise_score:
-            if margin_score:
+        if density_score and winner_score and cost_rise_score and price_diff < 0:
+            if margin_score >= 2.0:
                 insights.append(CoreInsight(
                     title="主力吸筹信号强烈",
                     content=f"当前价 {close:.2f} 低于平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}%。筹码集中、成本持续抬升且边际变化积极，表明主力资金正在积极吸筹，后续上涨概率较大。",
