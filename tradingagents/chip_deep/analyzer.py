@@ -764,11 +764,13 @@ class ChipDeepAnalyzer:
             return 2  # 最高2星
         
         # 恐慌出逃检查（使用实际计算而非文字匹配）
-        if chips_df is not None and prev_chips_df is not None and close > 0:
-            if self._check_panic_exit(chips_df, prev_chips_df, close):
+        # 只有当边际变化为 ❌ 时才触发恐慌出逃否决
+        if dim6["margin_change"]["label"] == "❌":
+            if chips_df is not None and prev_chips_df is not None and close > 0:
+                if self._check_panic_exit(chips_df, prev_chips_df, close):
+                    return 2
+            elif "恐慌出逃" in dim6["margin_change"]["detail"]:
                 return 2
-        elif dim6["margin_change"]["label"] == "❌" and "恐慌出逃" in dim6["margin_change"]["detail"]:
-            return 2
         
         if dim6["cost_rise"]["label"] == "❌":
             return 2
@@ -844,6 +846,8 @@ class ChipDeepAnalyzer:
         max_rating = self._apply_veto_rules(dim6, chips_df, prev_chips_df, close)
         base_rating = self._calc_base_rating(dim6["total"])
         rating = min(base_rating, max_rating)
+        
+
 
         # 总结文字
         summary = self._generate_summary(close, weight_avg, winner_rate, dim6, chips_df, prev_chips_df)
