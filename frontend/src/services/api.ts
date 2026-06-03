@@ -347,7 +347,7 @@ class ApiService {
         return this.request<void>(`/v1/feedbacks/${id}/read`, { method: 'POST' })
     }
 
-    async chipDeepAnalyze(symbol: string, lookbackDays = 250): Promise<ChipDeepResult> {
+    async chipDeepAnalyze(symbol: string, lookbackDays = 30): Promise<ChipDeepResult> {
         const params = new URLSearchParams({ symbol })
         params.append('lookback_days', lookbackDays.toString())
         return this.request<ChipDeepResult>(`/v1/chip-deep/analyze?${params}`)
