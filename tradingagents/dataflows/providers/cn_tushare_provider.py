@@ -308,13 +308,20 @@ class CnTushareProvider(BaseMarketDataProvider):
         self._init_ts()
         ts_code = self._to_tushare_code(symbol)
         try:
+            date_clean = trade_date.replace("-", "")
+            print(f"[Tushare] get_cyq_chips: symbol={symbol}, ts_code={ts_code}, trade_date={trade_date} → {date_clean}")
             df = self._call_with_retry(
                 self._ts.cyq_chips,
                 ts_code=ts_code,
-                trade_date=trade_date.replace("-", ""),
+                trade_date=date_clean,
             )
-            return df if df is not None and not df.empty else None
-        except Exception:
+            if df is not None and not df.empty:
+                print(f"[Tushare] get_cyq_chips 成功: {len(df)} 行")
+                return df
+            print(f"[Tushare] get_cyq_chips 返回空: df={df}")
+            return None
+        except Exception as e:
+            print(f"[Tushare] get_cyq_chips 异常: {e}")
             return None
 
     def get_hot_stocks_xq(self) -> str:

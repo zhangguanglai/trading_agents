@@ -49,7 +49,9 @@ class ChipDeepAnalyzer:
         perf_df = perf_df.sort_values("trade_date").reset_index(drop=True)
 
         # 2. 获取最新交易日（优先使用 daily 接口的最新日期，确保数据一致性）
-        latest_date = perf_df["trade_date"].max()
+        latest_date_raw = perf_df["trade_date"].max()
+        latest_date = str(latest_date_raw).replace("-", "")
+        print(f"[chip-deep] perf_df 最新日期: {latest_date} (原始: {latest_date_raw}, 类型: {type(latest_date_raw)})")
         
         # 尝试获取 daily 数据的最新日期（可能比 cyq_perf 更新）
         daily_latest_date = await self._get_daily_latest_date()
@@ -58,9 +60,38 @@ class ChipDeepAnalyzer:
             print(f"[chip-deep] 使用 daily 接口的最新日期: {latest_date}")
 
         # 3. 获取最新日期的筹码分布 (cyq_chips)
-        chips_df = await self._get_cyq_chips(latest_date)
+        # 向前查找直到找到有数据的日期（处理Tushare数据延迟/周末节假日无数据）
+        print(f"[chip-deep] 请求筹码分布: symbol={self.symbol}, date={latest_date}")
+        chips_df = None
+        valid_date = None
+        # 从最新日期开始向前查找，最多尝试10个交易日
+        for idx in range(len(perf_df) - 1, -1, -1):
+            candidate_date = str(perf_df.iloc[idx]["trade_date"]).replace("-", "")
+            if valid_date is None and candidate_date <= latest_date:
+                # 第一次尝试：用原始日期
+                if idx == len(perf_df) - 1:
+                    print(f"[chip-deep] 尝试获取筹码分布: date={candidate_date}")
+                    chips_df = await self._get_cyq_chips(candidate_date)
+                    if chips_df is not None and not chips_df.empty:
+                        valid_date = candidate_date
+                        print(f"[chip-deep] 筹码分布获取成功: date={valid_date}")
+                        break
+                else:
+                    # 后续尝试：用perf_df中的日期
+                    print(f"[chip-deep] 向前查找筹码分布: date={candidate_date}")
+                    chips_df = await self._get_cyq_chips(candidate_date)
+                    if chips_df is not None and not chips_df.empty:
+                        valid_date = candidate_date
+                        print(f"[chip-deep] 筹码分布获取成功: date={valid_date}")
+                        break
+        
         if chips_df is None or chips_df.empty:
             return self._build_error_result("筹码分布数据获取失败", stock_name)
+        
+        # 更新latest_date为实际有数据的日期
+        if valid_date and valid_date != latest_date:
+            print(f"[chip-deep] 使用有效日期替代: {valid_date} (原: {latest_date})")
+            latest_date = valid_date
 
         # 4. 获取周期起点筹码分布（边际变化）
         # 30日周期：期初约5个交易日前；60日周期：期初约10个交易日前
@@ -166,18 +197,25 @@ class ChipDeepAnalyzer:
             return cached
 
         try:
+            print(f"[chip-deep] 请求 cyq_chips: symbol={self.symbol}, trade_date={trade_date}")
             result = route_to_vendor(
                 "get_cyq_chips",
                 symbol=self.symbol,
                 trade_date=trade_date,
             )
+            print(f"[chip-deep] cyq_chips 结果: {type(result)}, {result}")
             if result is None:
+                print(f"[chip-deep] cyq_chips 返回 None")
                 return None
             df = result if isinstance(result, pd.DataFrame) else None
             if df is not None:
                 set_cached(self.symbol, trade_date, "cyq_chips", df)
+                print(f"[chip-deep] cyq_chips 数据: {len(df)} 行, 列: {df.columns.tolist()}")
+            else:
+                print(f"[chip-deep] cyq_chips 结果不是 DataFrame")
             return df
-        except Exception:
+        except Exception as e:
+            print(f"[chip-deep] cyq_chips 异常: {e}")
             return None
 
     async def _get_close_price(self, trade_date: str) -> float:
