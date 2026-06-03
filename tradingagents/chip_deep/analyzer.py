@@ -27,11 +27,13 @@ class ChipDeepAnalyzer:
     计算六维评分并生成分析报告。
     """
 
-    def __init__(self, symbol: str, lookback_days: int = 250):
+    def __init__(self, symbol: str, lookback_days: int = 30):
         self.symbol = symbol
         self.lookback_days = lookback_days
         self.end_date = datetime.now().strftime("%Y-%m-%d")
-        self.start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        # 缓冲期：30日数据需要约80天日历日以确保有足够交易日
+        buffer_days = max(80, int(lookback_days * 2.5))
+        self.start_date = (datetime.now() - timedelta(days=buffer_days)).strftime("%Y-%m-%d")
 
     async def analyze(self) -> ChipDeepResult:
         """执行完整分析流程"""
@@ -60,15 +62,18 @@ class ChipDeepAnalyzer:
         if chips_df is None or chips_df.empty:
             return self._build_error_result("筹码分布数据获取失败", stock_name)
 
-        # 4. 获取2周前的筹码分布（边际变化）
-        prev_date = self._get_prev_trade_date(perf_df, latest_date, days=14)
+        # 4. 获取周期起点筹码分布（边际变化）
+        # 30日周期：期初约5个交易日前；60日周期：期初约10个交易日前
+        prev_days = max(5, self.lookback_days // 6)
+        prev_date = self._get_prev_trade_date(perf_df, latest_date, days=prev_days)
         prev_chips_df = await self._get_cyq_chips(prev_date) if prev_date else None
 
         # 5. 获取最新收盘价 (daily 接口)
         close_price = await self._get_close_price(latest_date)
 
-        # 6. 计算六维评分
-        dim6 = self._calc_dim6(perf_df, chips_df, prev_chips_df, close_price)
+        # 6. 计算六维评分（传入周期内成本抬升数据）
+        period_cost_rise = self._calc_period_cost_rise(perf_df, latest_date)
+        dim6 = self._calc_dim6(perf_df, chips_df, prev_chips_df, close_price, period_cost_rise)
 
         # 7. 构建结果
         return self._build_result(perf_df, chips_df, prev_chips_df, dim6, close_price, stock_name, latest_date)
@@ -113,6 +118,45 @@ class ChipDeepAnalyzer:
             return df
         except Exception:
             return None
+
+    async def _get_daily_data(self) -> Optional[pd.DataFrame]:
+        """获取30日逐日行情数据（用于趋势洞察）"""
+        # 尝试缓存
+        cache_key = f"{self.start_date}_{self.end_date}_daily"
+        cached = get_cached(self.symbol, cache_key, "daily_data")
+        if cached is not None:
+            return cached
+
+        try:
+            from tradingagents.dataflows.providers.cn_tushare_provider import CnTushareProvider
+            provider = CnTushareProvider()
+            result = provider.get_stock_data(self.symbol, self.start_date, self.end_date)
+            if result is None:
+                return None
+            
+            import json
+            if isinstance(result, str):
+                try:
+                    data = json.loads(result)
+                    if isinstance(data, list) and len(data) > 0:
+                        df = pd.DataFrame(data)
+                        # 确保日期格式统一
+                        if "date" in df.columns:
+                            df["trade_date"] = df["date"].str.replace("-", "")
+                        elif "trade_date" in df.columns:
+                            df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "")
+                        set_cached(self.symbol, cache_key, "daily_data", df)
+                        return df
+                    elif isinstance(data, dict) and "error" in data:
+                        return None
+                except json.JSONDecodeError:
+                    return None
+            elif isinstance(result, pd.DataFrame) and not result.empty:
+                set_cached(self.symbol, cache_key, "daily_data", result)
+                return result
+        except Exception as e:
+            print(f"[chip-deep] _get_daily_data error: {e}")
+        return None
 
     async def _get_cyq_chips(self, trade_date: str) -> Optional[pd.DataFrame]:
         """获取指定日期的筹码分布（带缓存）"""
@@ -230,8 +274,8 @@ class ChipDeepAnalyzer:
         else:
             return 5.0, 8.0  # 高价股：5元一格，±8元搜索范围
 
-    def _calc_dim6(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close_price: float = 0) -> dict:
-        """六维评分计算（基于量化规则）— 技能文档 v2 加权版
+    def _calc_dim6(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close_price: float = 0, period_cost_rise: dict = None) -> dict:
+        """六维评分计算（基于量化规则）— 技能文档 v2 加权版（适配多周期）
 
         加权评分体系：
         ① 边际变化 ★: 权重最高（基础分 2.0）
@@ -249,6 +293,10 @@ class ChipDeepAnalyzer:
         peak_cost = self._calc_peak_cost(chips_df) if chips_df is not None and not chips_df.empty else float(latest.get("weight_avg", 0))
         weight_avg = peak_cost
         winner_rate = float(latest.get("winner_rate", 0))  # 已经是百分比
+        
+        # 周期内成本抬升数据（适配30/60/250日）
+        if period_cost_rise is None:
+            period_cost_rise = self._calc_period_cost_rise(perf_df, str(latest.get("trade_date", "")))
 
         # 获取分箱参数
         step, search_range = self._get_bin_params(close)
@@ -315,8 +363,8 @@ class ChipDeepAnalyzer:
             winner_label = "✅"
             winner_desc = "偏冷（可关注，等边际确认）"
         else:  # < 20%
-            # 区分优质/劣质低胜率
-            is_quality = self._is_quality_low_winner(perf_df, close)
+            # 区分优质/劣质低胜率（传入周期成本抬升数据）
+            is_quality = self._is_quality_low_winner(perf_df, close, period_cost_rise)
             if is_quality:
                 winner_score = 1.0
                 winner_label = "✅"
@@ -328,24 +376,66 @@ class ChipDeepAnalyzer:
         winner_detail = f"获利盘 {winner_rate:.1f}%，{winner_desc}"
 
         # ④ 成本结构抬升（辅助维度，基础分 0.5）
-        cost_rise, price_rise, cost_rise_type = self._calc_cost_rise_v2(perf_df, close)
-        # 规则 4a：成本抬升幅度
-        if cost_rise > 30:
-            cost_rise_score = 0.5
-            cost_rise_label = "✅✅"
-            cost_rise_desc = "底部大幅抬高"
-        elif cost_rise > 15:
-            cost_rise_score = 0.5
-            cost_rise_label = "✅"
-            cost_rise_desc = "底部明显上移"
-        elif cost_rise > 5:
-            cost_rise_score = 0.25
-            cost_rise_label = "⚠️"
-            cost_rise_desc = "底部部分抬高"
+        # 使用周期内成本抬升数据（适配30/60/250日）
+        cost_rise = period_cost_rise.get("cost_rise", 0)
+        price_rise = period_cost_rise.get("price_rise", 0)
+        cost_rise_type = period_cost_rise.get("type_desc", "未知")
+        
+        # 规则 4a：成本抬升幅度（按周期动态调整阈值）
+        if self.lookback_days <= 30:
+            # 30日周期：月度涨幅标准
+            if cost_rise > 8:
+                cost_rise_score = 0.5
+                cost_rise_label = "✅✅"
+                cost_rise_desc = "月度成本大幅抬高"
+            elif cost_rise > 4:
+                cost_rise_score = 0.5
+                cost_rise_label = "✅"
+                cost_rise_desc = "月度成本明显上移"
+            elif cost_rise > 1:
+                cost_rise_score = 0.25
+                cost_rise_label = "⚠️"
+                cost_rise_desc = "月度成本部分抬高"
+            else:
+                cost_rise_score = 0.0
+                cost_rise_label = "❌"
+                cost_rise_desc = "月度成本基本没变"
+        elif self.lookback_days <= 60:
+            # 60日周期：季度标准
+            if cost_rise > 15:
+                cost_rise_score = 0.5
+                cost_rise_label = "✅✅"
+                cost_rise_desc = "季度成本大幅抬高"
+            elif cost_rise > 8:
+                cost_rise_score = 0.5
+                cost_rise_label = "✅"
+                cost_rise_desc = "季度成本明显上移"
+            elif cost_rise > 3:
+                cost_rise_score = 0.25
+                cost_rise_label = "⚠️"
+                cost_rise_desc = "季度成本部分抬高"
+            else:
+                cost_rise_score = 0.0
+                cost_rise_label = "❌"
+                cost_rise_desc = "季度成本基本没变"
         else:
-            cost_rise_score = 0.0
-            cost_rise_label = "❌"
-            cost_rise_desc = "底部基本没变"
+            # 250日周期：年度标准（原有逻辑）
+            if cost_rise > 30:
+                cost_rise_score = 0.5
+                cost_rise_label = "✅✅"
+                cost_rise_desc = "底部大幅抬高"
+            elif cost_rise > 15:
+                cost_rise_score = 0.5
+                cost_rise_label = "✅"
+                cost_rise_desc = "底部明显上移"
+            elif cost_rise > 5:
+                cost_rise_score = 0.25
+                cost_rise_label = "⚠️"
+                cost_rise_desc = "底部部分抬高"
+            else:
+                cost_rise_score = 0.0
+                cost_rise_label = "❌"
+                cost_rise_desc = "底部基本没变"
         
         # 规则 4b：成本涨幅 vs 股价涨幅比值
         if price_rise != 0:
@@ -635,33 +725,45 @@ class ChipDeepAnalyzer:
         else:
             return 0, "❌", f"[{bin_start:.0f},{bin_end:.0f}){chg:+.1f}% {direction}（{source}）", False
 
-    def _is_quality_low_winner(self, perf_df: pd.DataFrame, close: float) -> bool:
-        """判断是否为优质低胜率（基于量化规则）
+    def _is_quality_low_winner(self, perf_df: pd.DataFrame, close: float, period_cost_rise: dict = None) -> bool:
+        """判断是否为优质低胜率（基于量化规则，适配多周期）
         
         技能文档标准（紫金矿业型）：
         - 年度涨幅 > 25%
         - 筹码换手完成度 > 90%
         - 成本抬升幅度 > 15%
+        
+        30日周期适配：使用年化收益率替代年度涨幅，月度换手替代年度换手
         """
         if len(perf_df) < 2:
             return False
         
-        # 年度涨幅 > 25%（技能文档标准）
-        start_price = float(perf_df.iloc[0].get("weight_avg", 0))
-        if start_price > 0:
-            annual_return = (close - start_price) / start_price * 100
-        else:
-            annual_return = 0
+        # 获取周期内成本抬升数据
+        if period_cost_rise is None:
+            latest_date = str(perf_df.iloc[-1].get("trade_date", ""))
+            period_cost_rise = self._calc_period_cost_rise(perf_df, latest_date)
         
-        # 成本抬升幅度
-        cost_rise = self._calc_cost_rise_v2(perf_df, close)[0]
+        annual_return = period_cost_rise.get("annual_return", 0)
+        cost_rise = period_cost_rise.get("cost_rise", 0)
+        period_days = period_cost_rise.get("period_days", 30)
         
         # 筹码换手完成度（用 winner_rate 变化幅度近似）
         start_winner = float(perf_df.iloc[0].get("winner_rate", 0))
         end_winner = float(perf_df.iloc[-1].get("winner_rate", 0))
         chip_turnover = abs(end_winner - start_winner)
         
-        return annual_return > 25 and chip_turnover > 90 and cost_rise > 15
+        # 按周期动态调整阈值
+        if self.lookback_days <= 30:
+            # 30日周期：月度标准（年化25% ≈ 月度2%，放宽到5%）
+            # 月度换手 > 15%（年化约90%的等比例）
+            # 月度成本抬升 > 2%（年化约15%的等比例）
+            return annual_return > 5 and chip_turnover > 15 and cost_rise > 2
+        elif self.lookback_days <= 60:
+            # 60日周期：季度标准
+            return annual_return > 15 and chip_turnover > 45 and cost_rise > 5
+        else:
+            # 250日周期：年度标准（原有逻辑）
+            return annual_return > 25 and chip_turnover > 90 and cost_rise > 15
 
     def _calc_cost_rise_v2(self, perf_df: pd.DataFrame, close: float) -> tuple[float, float, str]:
         """计算250日成本抬升并对比股价涨幅（基于量化规则）
@@ -704,6 +806,82 @@ class ChipDeepAnalyzer:
             type_desc = "追高套牢型"
         
         return cost_rise, price_rise, type_desc
+
+    def _calc_period_cost_rise(self, perf_df: pd.DataFrame, latest_date: str) -> dict:
+        """计算周期内成本抬升（适配30/60/250日不同周期）
+        
+        根据 lookback_days 动态调整判断标准：
+        - 30日周期：周期涨幅作为"月度涨幅"，判断优质低胜率
+        - 60日/250日：维持原有年度涨幅标准
+        
+        Returns:
+            dict: {cost_rise, price_rise, type_desc, period_return, period_days}
+        """
+        if len(perf_df) < 2:
+            return {"cost_rise": 0, "price_rise": 0, "type_desc": "数据不足", "period_return": 0, "period_days": 0}
+        
+        # 按日期排序
+        df_sorted = perf_df.sort_values("trade_date")
+        
+        # 取周期起止数据
+        start_avg = float(df_sorted.iloc[0].get("weight_avg", 0))
+        end_avg = float(df_sorted.iloc[-1].get("weight_avg", 0))
+        start_date = df_sorted.iloc[0]["trade_date"]
+        end_date = df_sorted.iloc[-1]["trade_date"]
+        
+        # 计算日历天数
+        from datetime import datetime as dt
+        try:
+            start_dt = dt.strptime(str(start_date), "%Y%m%d")
+            end_dt = dt.strptime(str(end_date), "%Y%m%d")
+            period_days = (end_dt - start_dt).days
+        except:
+            period_days = len(df_sorted)
+        
+        # 成本抬升幅度
+        cost_rise = ((end_avg - start_avg) / start_avg * 100) if start_avg > 0 else 0
+        
+        # 周期收益率（年化）
+        start_close = 0.0
+        end_close = 0.0
+        if period_days > 0 and start_avg > 0:
+            # 使用期初收盘价计算更准确
+            start_close = float(df_sorted.iloc[0].get("close", start_avg))
+            end_close = float(df_sorted.iloc[-1].get("close", end_avg))
+            if start_close > 0:
+                total_return = (end_close - start_close) / start_close * 100
+                # 年化收益率
+                annual_return = total_return * 365 / period_days
+            else:
+                total_return = cost_rise
+                annual_return = total_return * 365 / period_days
+        else:
+            total_return = 0
+            annual_return = 0
+        
+        # 股价涨幅（使用期初/期末收盘价计算，与成本抬升对比）
+        if start_close > 0:
+            price_rise = total_return
+        else:
+            price_rise = cost_rise
+        
+        # 类型判断：成本涨幅 vs 股价涨幅
+        diff = cost_rise - price_rise
+        if abs(diff) <= 10:
+            type_desc = "健康换手型"
+        elif cost_rise > price_rise:
+            type_desc = "底部抬升型"
+        else:
+            type_desc = "追高套牢型"
+        
+        return {
+            "cost_rise": cost_rise,
+            "price_rise": price_rise,
+            "type_desc": type_desc,
+            "period_return": total_return,
+            "annual_return": annual_return,
+            "period_days": period_days,
+        }
 
     def _calc_support_levels_v2(self, chips_df: pd.DataFrame, close: float) -> List[dict]:
         """计算多层支撑位（基于量化规则）
