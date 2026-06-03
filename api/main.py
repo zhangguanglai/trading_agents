@@ -4685,31 +4685,8 @@ _CHIP_DEEP_ALIASES = {
     "迪王": "002594.SZ", "比亚迪": "002594.SZ",
 }
 
-# stock_basic 缓存（名称 → ts_code），避免重复API调用
+# stock_basic 缓存（名称 → ts_code），会话内缓存已解析的结果
 _stock_name_cache: dict[str, str] = {}
-_stock_basic_df = None  # 缓存 stock_basic 全表，避免重复API调用
-
-
-def _get_stock_basic_df():
-    """获取并缓存 stock_basic 全表数据"""
-    global _stock_basic_df
-    if _stock_basic_df is not None:
-        return _stock_basic_df
-    
-    try:
-        import tushare as ts
-        token = os.getenv("TUSHARE_TOKEN", "")
-        if token:
-            ts.set_token(token)
-            api = ts.pro_api()
-            df = api.stock_basic(fields="ts_code,name")
-            if df is not None and not df.empty:
-                _stock_basic_df = df
-                print(f"[chip-deep] stock_basic 缓存: {len(df)} 只股票")
-                return df
-    except Exception as e:
-        print(f"[chip-deep] 加载 stock_basic 失败: {e}")
-    return None
 
 
 def _resolve_stock_name_to_code(name_or_symbol: str) -> str:
@@ -4742,26 +4719,34 @@ def _resolve_stock_name_to_code(name_or_symbol: str) -> str:
     if alias_result:
         return alias_result
     
-    # 4. 名称查询：从 stock_basic 查找
-    # 先查已解析的缓存
+    # 4. 名称查询：每次从Tushare拉取，避免缓存过期
+    # 先查会话内已解析的缓存
     if s in _stock_name_cache:
         return _stock_name_cache[s]
     
-    # 从缓存的 stock_basic 全表查找
-    df = _get_stock_basic_df()
-    if df is not None and not df.empty:
-        # 精确匹配
-        match = df[df["name"] == s]
-        if not match.empty:
-            code = str(match.iloc[0]["ts_code"])
-            _stock_name_cache[s] = code
-            return code
-        # 模糊匹配（包含）
-        match = df[df["name"].str.contains(s, na=False)]
-        if not match.empty:
-            code = str(match.iloc[0]["ts_code"])
-            _stock_name_cache[s] = code
-            return code
+    # 从Tushare拉取stock_basic
+    try:
+        import tushare as ts
+        token = os.getenv("TUSHARE_TOKEN", "")
+        if token:
+            ts.set_token(token)
+            api = ts.pro_api()
+            df = api.stock_basic(fields="ts_code,name")
+            if df is not None and not df.empty:
+                # 精确匹配
+                match = df[df["name"] == s]
+                if not match.empty:
+                    code = str(match.iloc[0]["ts_code"])
+                    _stock_name_cache[s] = code
+                    return code
+                # 模糊匹配（包含）
+                match = df[df["name"].str.contains(s, na=False)]
+                if not match.empty:
+                    code = str(match.iloc[0]["ts_code"])
+                    _stock_name_cache[s] = code
+                    return code
+    except Exception as e:
+        print(f"[chip-deep] 股票名称解析失败: {e}")
     
     # 5. 如果都不是，返回原始输入（让后续逻辑处理）
     return s.upper()
@@ -4803,21 +4788,29 @@ async def chip_deep_search(
                 "match_type": "alias",
             })
     
-    # 2. stock_basic 名称匹配
-    df = _get_stock_basic_df()
-    if df is not None and not df.empty:
-        # 名称包含关键词
-        match = df[df["name"].str.contains(q, na=False)]
-        for _, row in match.head(10).iterrows():
-            code = str(row["ts_code"])
-            name = str(row["name"])
-            # 避免与别名重复
-            if not any(r["ts_code"] == code for r in results):
-                results.append({
-                    "ts_code": code,
-                    "name": name,
-                    "match_type": "name",
-                })
+    # 2. stock_basic 名称匹配（每次从Tushare拉取）
+    try:
+        import tushare as ts
+        token = os.getenv("TUSHARE_TOKEN", "")
+        if token:
+            ts.set_token(token)
+            api = ts.pro_api()
+            df = api.stock_basic(fields="ts_code,name")
+            if df is not None and not df.empty:
+                # 名称包含关键词
+                match = df[df["name"].str.contains(q, na=False)]
+                for _, row in match.head(10).iterrows():
+                    code = str(row["ts_code"])
+                    name = str(row["name"])
+                    # 避免与别名重复
+                    if not any(r["ts_code"] == code for r in results):
+                        results.append({
+                            "ts_code": code,
+                            "name": name,
+                            "match_type": "name",
+                        })
+    except Exception as e:
+        print(f"[chip-deep] 股票搜索失败: {e}")
     
     # 去重
     seen = set()
