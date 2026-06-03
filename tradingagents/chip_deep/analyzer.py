@@ -47,6 +47,11 @@ class ChipDeepAnalyzer:
 
         # 确保数据按日期正序排列（旧→新），所有后续方法都依赖这个顺序
         perf_df = perf_df.sort_values("trade_date").reset_index(drop=True)
+        
+        # 切片：只保留最近 lookback_days 个交易日的数据用于分析
+        if len(perf_df) > self.lookback_days:
+            perf_df = perf_df.tail(self.lookback_days).reset_index(drop=True)
+            print(f"[chip-deep] perf_df 切片: 保留最近 {self.lookback_days} 个交易日")
 
         # 2. 获取最新交易日（优先使用 daily 接口的最新日期，确保数据一致性）
         latest_date_raw = perf_df["trade_date"].max()
