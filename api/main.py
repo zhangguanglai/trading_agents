@@ -4685,32 +4685,101 @@ _CHIP_DEEP_ALIASES = {
     "迪王": "002594.SZ", "比亚迪": "002594.SZ",
 }
 
+# stock_basic 缓存（名称 → ts_code），避免重复API调用
+_stock_name_cache: dict[str, str] = {}
+_stock_basic_df = None  # 缓存 stock_basic 全表，避免重复API调用
+
+
+def _get_stock_basic_df():
+    """获取并缓存 stock_basic 全表数据"""
+    global _stock_basic_df
+    if _stock_basic_df is not None:
+        return _stock_basic_df
+    
+    try:
+        import tushare as ts
+        token = os.getenv("TUSHARE_TOKEN", "")
+        if token:
+            ts.set_token(token)
+            api = ts.pro_api()
+            df = api.stock_basic(fields="ts_code,name")
+            if df is not None and not df.empty:
+                _stock_basic_df = df
+                print(f"[chip-deep] stock_basic 缓存: {len(df)} 只股票")
+                return df
+    except Exception as e:
+        print(f"[chip-deep] 加载 stock_basic 失败: {e}")
+    return None
+
+
+def _resolve_stock_name_to_code(name_or_symbol: str) -> str:
+    """将股票名称或代码解析为标准的 ts_code 格式。
+    
+    支持输入：
+    - 纯数字代码：如 "000951" → "000951.SZ"
+    - 标准代码：如 "000951.SZ" 或 "600519.SH"
+    - 股票名称：如 "华工科技" → 查询 stock_basic 返回 "000988.SZ"
+    - 别名：如 "茅台" → "600519.SH"
+    """
+    s = name_or_symbol.strip()
+    
+    # 1. 已是标准格式（含 .）
+    if "." in s:
+        return s.upper()
+    
+    # 2. 纯数字代码，自动补全后缀
+    if s.isdigit() and len(s) in (6,):
+        code = s.upper()
+        if code.startswith("6"):
+            return f"{code}.SH"
+        elif code.startswith("0") or code.startswith("3"):
+            return f"{code}.SZ"
+        elif code.startswith("8") or code.startswith("4"):
+            return f"{code}.BJ"
+    
+    # 3. 别名匹配
+    alias_result = _CHIP_DEEP_ALIASES.get(s)
+    if alias_result:
+        return alias_result
+    
+    # 4. 名称查询：从 stock_basic 查找
+    # 先查已解析的缓存
+    if s in _stock_name_cache:
+        return _stock_name_cache[s]
+    
+    # 从缓存的 stock_basic 全表查找
+    df = _get_stock_basic_df()
+    if df is not None and not df.empty:
+        # 精确匹配
+        match = df[df["name"] == s]
+        if not match.empty:
+            code = str(match.iloc[0]["ts_code"])
+            _stock_name_cache[s] = code
+            return code
+        # 模糊匹配（包含）
+        match = df[df["name"].str.contains(s, na=False)]
+        if not match.empty:
+            code = str(match.iloc[0]["ts_code"])
+            _stock_name_cache[s] = code
+            return code
+    
+    # 5. 如果都不是，返回原始输入（让后续逻辑处理）
+    return s.upper()
+
 
 @app.get("/v1/chip-deep/analyze", response_model=ChipDeepResult)
 async def chip_deep_analyze(
     symbol: str = Query(..., description="股票代码或名称，如 000951.SZ 或 中国重汽"),
-    lookback_days: int = Query(250, ge=30, le=500, description="回溯天数"),
+    lookback_days: int = Query(30, ge=30, le=500, description="回溯天数"),
     current_user: Optional[UserDB] = Depends(_optional_user),
 ):
     """筹码深度分析主接口
     
     输入股票代码或名称，返回筹码分布、六维评分、综合评级等完整分析结果。
     """
-    # 别名解析
-    resolved = _CHIP_DEEP_ALIASES.get(symbol.strip())
-    if resolved:
-        symbol = resolved
-    
-    # 标准化代码格式
-    symbol = symbol.strip().upper()
-    if "." not in symbol:
-        # 尝试自动补全后缀
-        if symbol.startswith("6"):
-            symbol += ".SH"
-        elif symbol.startswith("0") or symbol.startswith("3"):
-            symbol += ".SZ"
-        elif symbol.startswith("8") or symbol.startswith("4"):
-            symbol += ".BJ"
+    # 统一解析：支持代码、名称、别名
+    symbol = _resolve_stock_name_to_code(symbol)
+    print(f"[chip-deep] 解析后的代码: {symbol}")
     
     analyzer = ChipDeepAnalyzer(symbol, lookback_days)
     result = await analyzer.analyze()
@@ -4721,11 +4790,11 @@ async def chip_deep_analyze(
 async def chip_deep_search(
     q: str = Query(..., min_length=1, max_length=20, description="搜索关键词"),
 ):
-    """智能搜索（含别名）"""
+    """智能搜索（支持别名、名称、代码模糊匹配）"""
     q = q.strip()
     results = []
     
-    # 别名匹配
+    # 1. 别名匹配
     for alias, code in _CHIP_DEEP_ALIASES.items():
         if q in alias or alias in q:
             results.append({
@@ -4733,6 +4802,22 @@ async def chip_deep_search(
                 "name": alias,
                 "match_type": "alias",
             })
+    
+    # 2. stock_basic 名称匹配
+    df = _get_stock_basic_df()
+    if df is not None and not df.empty:
+        # 名称包含关键词
+        match = df[df["name"].str.contains(q, na=False)]
+        for _, row in match.head(10).iterrows():
+            code = str(row["ts_code"])
+            name = str(row["name"])
+            # 避免与别名重复
+            if not any(r["ts_code"] == code for r in results):
+                results.append({
+                    "ts_code": code,
+                    "name": name,
+                    "match_type": "name",
+                })
     
     # 去重
     seen = set()
