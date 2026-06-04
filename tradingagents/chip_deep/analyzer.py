@@ -99,13 +99,17 @@ class ChipDeepAnalyzer:
             latest_date = valid_date
 
         # 4. 获取周期起点筹码分布（边际变化）
-        # 30日周期：期初约5个交易日前；60日周期：期初约10个交易日前
-        prev_days = max(5, self.lookback_days // 6)
-        prev_date = self._get_prev_trade_date(perf_df, latest_date, days=prev_days)
+        # 30日窗口：使用 perf_df 的第一个交易日（周期起点），与 D4 成本抬升窗口对齐
+        # 这样 D1 和 D4 都在同一时间窗口下做判断，避免 5 日短视误判"洗盘"为"派发"
+        prev_date = str(perf_df.iloc[0]["trade_date"]).replace("-", "") if not perf_df.empty else None
         prev_chips_df = await self._get_cyq_chips(prev_date) if prev_date else None
 
         # 5. 获取最新收盘价 (daily 接口)
         close_price = await self._get_close_price(latest_date)
+
+        # 5.5 加载30日逐日行情（用于洗盘日专项分析）
+        daily_df = await self._get_daily_data()
+        self._daily_df_cache = daily_df  # 供 _detect_wash_day 使用
 
         # 6. 计算六维评分（传入周期内成本抬升数据）
         period_cost_rise = self._calc_period_cost_rise(perf_df, latest_date)
@@ -367,7 +371,7 @@ class ChipDeepAnalyzer:
             density_desc = "厚垫子"
         elif density > 20:
             density_score = 0.5
-            density_label = "⚠️"
+            density_label = "⚠"
             density_desc = "中等支撑"
         else:
             density_score = 0.0
@@ -375,10 +379,10 @@ class ChipDeepAnalyzer:
             density_desc = "薄支撑"
         density_detail = f"当前价附近筹码占比 {density:.1f}%，{density_desc}"
         if vacuum_risk:
-            density_detail += " ⚠️真空悬崖"
+            density_detail += " ⚠真空悬崖"
 
         #  获利盘位置（重要维度，基础分 1.0）
-        # ⚠️ 关键修正：获利盘高低必须结合D1边际变化方向交叉判断（技能文档v2）
+        # ⚠ 关键修正：获利盘高低必须结合D1边际变化方向交叉判断（技能文档v2）
         # 单边上涨中高位锁仓≠风险，高位派发才是
         
         if margin_score >= 2.0:
@@ -412,23 +416,23 @@ class ChipDeepAnalyzer:
             # === 情况B：筹码峰在下降（主力可能出货或无人接盘）===
             if winner_rate > 90:
                 winner_score = 0.0
-                winner_label = "❌️"
+                winner_label = "❌"
                 winner_desc = "高位派发（减仓）"
             elif winner_rate >= 80:
                 winner_score = 0.5
-                winner_label = "⚠️"
+                winner_label = "⚠"
                 winner_desc = "过热+流出（谨慎）"
             elif winner_rate >= 60:
                 winner_score = 0.5
-                winner_label = "⚠️"
+                winner_label = "⚠"
                 winner_desc = "偏暖但流出（观望）"
             elif winner_rate >= 40:
                 winner_score = 0.5
-                winner_label = "⚠️"
+                winner_label = "⚠"
                 winner_desc = "均衡但流出（观望）"
             elif winner_rate >= 20:
                 winner_score = 0.5
-                winner_label = "⚠️"
+                winner_label = "⚠"
                 winner_desc = "偏冷+流出（弱势，等转正）"
             else:  # < 20%
                 is_quality = self._is_quality_low_winner(perf_df, close, period_cost_rise)
@@ -445,11 +449,11 @@ class ChipDeepAnalyzer:
             # === 情况C：边际变化微弱（0 < score < 2），使用原规则 ===
             if winner_rate > 90:
                 winner_score = 0.0
-                winner_label = "❌️"
+                winner_label = "❌"
                 winner_desc = "极度过热（不买入，持有者减仓）"
             elif winner_rate > 80:
                 winner_score = 0.5
-                winner_label = "⚠️"
+                winner_label = "⚠"
                 winner_desc = "过热（持有不加仓，设止盈）"
             elif winner_rate > 60:
                 winner_score = 1.0
@@ -494,7 +498,7 @@ class ChipDeepAnalyzer:
                 cost_rise_desc = "月度成本明显上移"
             elif cost_rise > 1:
                 cost_rise_score = 0.25
-                cost_rise_label = "⚠️"
+                cost_rise_label = "⚠"
                 cost_rise_desc = "月度成本部分抬高"
             else:
                 cost_rise_score = 0.0
@@ -512,7 +516,7 @@ class ChipDeepAnalyzer:
                 cost_rise_desc = "季度成本明显上移"
             elif cost_rise > 3:
                 cost_rise_score = 0.25
-                cost_rise_label = "⚠️"
+                cost_rise_label = "⚠"
                 cost_rise_desc = "季度成本部分抬高"
             else:
                 cost_rise_score = 0.0
@@ -530,7 +534,7 @@ class ChipDeepAnalyzer:
                 cost_rise_desc = "底部明显上移"
             elif cost_rise > 5:
                 cost_rise_score = 0.25
-                cost_rise_label = "⚠️"
+                cost_rise_label = "⚠"
                 cost_rise_desc = "底部部分抬高"
             else:
                 cost_rise_score = 0.0
@@ -568,11 +572,11 @@ class ChipDeepAnalyzer:
         overshoot = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
         if overshoot > 15:
             overshoot_score = 0.0
-            overshoot_label = "❌⚠️"
+            overshoot_label = "❌⚠"
             overshoot_desc = "显著高于成本（卖出或减仓）"
         elif overshoot > 3:
             overshoot_score = 0.25
-            overshoot_label = "⚠️"
+            overshoot_label = "⚠"
             overshoot_desc = "略高于成本（不追高，等回调）"
         elif overshoot >= -5:
             overshoot_score = 0.5
@@ -580,7 +584,7 @@ class ChipDeepAnalyzer:
             overshoot_desc = "正常波动（可买入或持有）"
         elif overshoot >= -10:
             overshoot_score = 0.25
-            overshoot_label = "⚠️"
+            overshoot_label = "⚠"
             overshoot_desc = "轻度超跌（关注，不可重仓）"
         elif overshoot >= -20:
             overshoot_score = 0.5
@@ -600,7 +604,7 @@ class ChipDeepAnalyzer:
             support_desc = "层级良好（可承受回调，不恐慌）"
         elif len(support_levels) >= 1:
             support_score = 0.25
-            support_label = "⚠️"
+            support_label = "⚠"
             support_desc = "偏薄（跌破首层应减仓）"
         else:
             support_score = 0.0
@@ -751,44 +755,47 @@ class ChipDeepAnalyzer:
         return bin_low, bin_high
 
     def _calc_margin_change_v2(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float) -> tuple[float, str, str, bool]:
-        """计算边际变化（技能文档 v2 双轨制）
-        
+        """计算边际变化（技能文档 v2 双轨制 + 重心位移 v3）
+
+        v3 新增：
+        - 筹码重心位移：期初/期末筹码峰位变化，反映整体成本抬高
+        - D1+D4 联合判定：当前分箱微降但重心大幅上移 → 判定为"洗盘后锁仓"（健康）
+
         双轨制：取当前分箱与筹码峰分箱中绝对值更大的变化
-        
-        核心逻辑：回答"资金在往哪个方向流动？"
-        
+
         判定树（按优先级）：
+        0. 重心+5% & chg微降(|chg|<5%) → 1.0分 ✅ 洗盘后锁仓
         1. chg > 10%     → 2.0分 ✅ 猛烈向上
-        2. chg >= 3%     → 0.5分 ⚠️ 温和
+        2. chg >= 3%     → 0.5分 ⚠ 温和
         3. chg < -15%    → 检查下方分箱变化
            - 下方大增 >10% → 0分 ❌ 恐慌出逃 + 否决项
            - 下方无大增   → 0分 ❌ 减少
         4. chg < 0       → 0分 ❌ 减少
         5. |chg| < 3%    → 0分 ❌ 无人
-        
+
         Returns:
             (score, label, detail, panic_exit): 得分、标签、描述、是否恐慌出逃
         """
         if prev_chips_df is None or prev_chips_df.empty or chips_df is None or chips_df.empty:
             return 0, "❌", "数据不足", False
-        
+
         # 获取分箱参数
         step = self._get_bin_params(close)[0]
         bins = self._get_price_bins(chips_df, close)
-        
+
         # 聚合当前筹码分布到分箱
         bp_current = self._aggregate_to_bins(chips_df, bins)
         bp_prev = self._aggregate_to_bins(prev_chips_df, bins)
-        
+
         # 双轨制：当前分箱 vs 筹码峰分箱
         close_bin = np.digitize(close, bins, right=False) - 1
         close_bin = max(0, min(close_bin, len(bp_current) - 1))
-        
+
         peak_bin = int(np.argmax(bp_current))
-        
+
         chg_close = bp_current[close_bin] - bp_prev[close_bin]
         chg_peak = bp_current[peak_bin] - bp_prev[peak_bin]
-        
+
         # 取绝对值更大的那个
         if abs(chg_close) >= abs(chg_peak):
             chg = chg_close
@@ -798,26 +805,45 @@ class ChipDeepAnalyzer:
             chg = chg_peak
             source = "筹码峰分箱"
             source_bin = peak_bin
-        
+
         # 分箱区间描述
         bin_start = bins[source_bin]
         bin_end = bins[source_bin + 1] if source_bin + 1 < len(bins) else bins[source_bin] + step
-        
+
         # 方向判断：chg 符号天然决定方向
         direction = "向上" if chg > 0 else "向下" if chg < 0 else "持平"
-        
+
         # ┌─────────────────────────────────────────────────────────┐
-        # │           边际变化完整判定树（技能文档 v2）              │
+        # │  v3 新增：筹码重心位移（与 D1+D4 联合判定）              │
         # └─────────────────────────────────────────────────────────┘
-        
+        # 期初/期末筹码峰位：argmax of bp_prev / bp_current
+        peak_bin_prev = int(np.argmax(bp_prev))
+        peak_cost_curr = (bins[peak_bin] + bins[peak_bin + 1]) / 2
+        peak_cost_prev = (bins[peak_bin_prev] + bins[peak_bin_prev + 1]) / 2
+        if peak_cost_prev > 0:
+            center_shift_pct = (peak_cost_curr - peak_cost_prev) / peak_cost_prev * 100
+        else:
+            center_shift_pct = 0
+
+        # ┌─────────────────────────────────────────────────────────┐
+        # │           边际变化完整判定树（v2/v3）                    │
+        # └─────────────────────────────────────────────────────────┘
+
+        # 0. 联合判定：重心大幅上移 + 当前分箱微降 → 洗盘后锁仓（健康）
+        #    当 D4 成本大幅抬高且 D1 单分箱微降时，整体结构是"成本抬高 + 高位洗盘"
+        #    不应误判为"派发"，应当识别为健康的洗盘行为
+        if center_shift_pct > 5 and chg < 0 and abs(chg) < 5:
+            shift_desc = f"重心+{center_shift_pct:.1f}%"
+            return 1.0, "✅", f"[{bin_start:.0f},{bin_end:.0f}){chg:+.1f}% {direction}（{source}，{shift_desc}洗盘后锁仓）", False
+
         # 1. 猛烈向上
         if chg > 10:
             return 2.0, "✅", f"[{bin_start:.0f},{bin_end:.0f})+{chg:.1f}% {direction}（{source}）", False
-        
+
         # 2. 温和
         elif chg >= 3:
-            return 0.5, "⚠️", f"[{bin_start:.0f},{bin_end:.0f})+{chg:.1f}% {direction}（{source}）", False
-        
+            return 0.5, "⚠", f"[{bin_start:.0f},{bin_end:.0f})+{chg:.1f}% {direction}（{source}）", False
+
         # 3. 恐慌出逃检测
         elif chg < -15:
             # 计算下方分箱（低于当前价的所有分箱）的总变化
@@ -826,16 +852,16 @@ class ChipDeepAnalyzer:
             below_curr_pct = chips_df.loc[below_curr_mask, "percent"].sum() if below_curr_mask.any() else 0
             below_prev_pct = prev_chips_df.loc[below_prev_mask, "percent"].sum() if below_prev_mask.any() else 0
             below_chg = below_curr_pct - below_prev_pct
-            
+
             if below_chg > 10:
                 return 0, "❌", f"[{bin_start:.0f},{bin_end:.0f}){chg:.1f}% {direction}（{source}）恐慌出逃", True
             else:
                 return 0, "❌", f"[{bin_start:.0f},{bin_end:.0f}){chg:.1f}% {direction}（{source}）", False
-        
+
         # 4. 减少
         elif chg < 0:
             return 0, "❌", f"[{bin_start:.0f},{bin_end:.0f}){chg:.1f}% {direction}（{source}）", False
-        
+
         # 5. 无人
         else:
             return 0, "❌", f"[{bin_start:.0f},{bin_end:.0f}){chg:+.1f}% {direction}（{source}）", False
@@ -1473,9 +1499,75 @@ class ChipDeepAnalyzer:
         summary = f"""当前价 {close:.2f} {price_status}平均成本 {weight_avg:.2f}（{price_diff:+.1f}%），获利盘 {winner_rate:.1f}% {winner_desc}。{margin_desc}。六维评分 {total:.1f}/5.5，{bottom_text}。评级 {stars}。"""
 
         if veto_reason:
-            summary += f" ⚠️ {veto_reason}"
+            summary += f" ⚠ {veto_reason}"
 
         return summary
+
+    def _detect_wash_day(self, perf_df: pd.DataFrame, daily_df: Optional[pd.DataFrame] = None) -> Optional[dict]:
+        """识别周期内最具洗盘特征的一天（v3 新增）
+
+        洗盘特征定义：
+        1. 当日 weight_avg 较前一日明显下降（主力借恐慌吸筹降低成本）
+        2. 后续 1-3 日内 weight_avg 修复回原水平（洗盘完成）
+        3. 如有 daily 数据，盘中出现 V 形（最低价显著低于收盘价）
+
+        Returns:
+            dict: {date, weight_avg_drop_pct, recovery_pct, v_recovery_pct} 或 None
+        """
+        if perf_df is None or len(perf_df) < 5:
+            return None
+        df = perf_df.sort_values("trade_date").reset_index(drop=True)
+        if "weight_avg" not in df.columns:
+            return None
+
+        # 计算每日 weight_avg 与前一日的差值（百分点）
+        df["wa_diff"] = df["weight_avg"].diff()
+        # 找跌幅最大的一天（必须有正的前一日值）
+        valid = df[df["wa_diff"] < 0].dropna(subset=["wa_diff"])
+        if valid.empty:
+            return None
+
+        # 排序取跌幅最大的一天
+        wash_idx = valid["wa_diff"].idxmin()
+        wash_date = str(df.loc[wash_idx, "trade_date"])
+        wash_wa = float(df.loc[wash_idx, "weight_avg"])
+        prev_wa = float(df.loc[wash_idx - 1, "weight_avg"])
+        drop_pct = (wash_wa - prev_wa) / prev_wa * 100 if prev_wa > 0 else 0
+
+        # 计算后续 1-5 日的修复幅度
+        recovery_pct = 0
+        if wash_idx + 3 < len(df):
+            recovery_wa = float(df.loc[min(wash_idx + 3, len(df) - 1), "weight_avg"])
+            recovery_pct = (recovery_wa - wash_wa) / wash_wa * 100 if wash_wa > 0 else 0
+
+        # 如果有 daily 数据，计算 V 反还原幅度
+        v_recovery_pct = 0
+        low_price = 0
+        close_price = 0
+        if daily_df is not None and not daily_df.empty and "low" in daily_df.columns and "close" in daily_df.columns:
+            d = daily_df.copy()
+            # 统一日期格式
+            if "date" in d.columns:
+                d["trade_date"] = d["date"].astype(str).str.replace("-", "")
+            elif "trade_date" in d.columns:
+                d["trade_date"] = d["trade_date"].astype(str).str.replace("-", "")
+            else:
+                return None
+            row = d[d["trade_date"] == wash_date]
+            if not row.empty:
+                low_price = float(row.iloc[0]["low"])
+                close_price = float(row.iloc[0]["close"])
+                if low_price > 0:
+                    v_recovery_pct = (close_price - low_price) / low_price * 100
+
+        return {
+            "date": wash_date,
+            "weight_avg_drop_pct": drop_pct,
+            "recovery_pct": recovery_pct,
+            "low_price": low_price,
+            "close_price": close_price,
+            "v_recovery_pct": v_recovery_pct,
+        }
 
     def _generate_core_insights(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, perf_df: pd.DataFrame, chips_df: pd.DataFrame, margin_change: List[MarginChangeItem]) -> List[CoreInsight]:
         """生成核心洞察列表 — 资深投资专家视角，提供可操作的建仓/加仓/止盈/止损建议"""
@@ -1556,6 +1648,41 @@ class ChipDeepAnalyzer:
                 level="info"
             ))
         
+        # ========== 模块 2.5：洗盘日专项分析（v3 新增）==========
+        # 识别周期内最具洗盘特征的日子，验证"主力借恐慌吸筹"的市场行为
+        daily_df = None
+        try:
+            daily_df = self._daily_df_cache if hasattr(self, "_daily_df_cache") else None
+        except Exception:
+            pass
+        wash = self._detect_wash_day(perf_df, daily_df)
+        if wash and wash.get("weight_avg_drop_pct", 0) < -3:
+            # 仅当 weight_avg 单日跌幅 > 3% 时认为是显著洗盘
+            if wash.get("v_recovery_pct", 0) > 5:
+                # V 反还原 > 5%：明显的盘中 V 形反转
+                title = f"🔄 {wash['date']} 洗盘日 V 反还原"
+                content = (
+                    f"周期内最显著的洗盘日：{wash['date']}。"
+                    f"当日加权成本下降 {wash['weight_avg_drop_pct']:.1f}%，"
+                    f"盘中最低 {wash['low_price']:.2f} 元、收盘 {wash['close_price']:.2f} 元，"
+                    f"V 反还原 +{wash['v_recovery_pct']:.1f}%；"
+                    f"3 日内加权成本修复 {wash['recovery_pct']:+.1f}%。"
+                    f"确认主力借恐慌洗盘后筹码更牢固。"
+                )
+            else:
+                title = f"🔄 {wash['date']} 洗盘日"
+                content = (
+                    f"周期内最显著的洗盘日：{wash['date']}。"
+                    f"当日加权成本下降 {wash['weight_avg_drop_pct']:.1f}%，"
+                    f"3 日内加权成本修复 {wash['recovery_pct']:+.1f}%。"
+                    f"洗盘后筹码结构进一步集中。"
+                )
+            insights.append(CoreInsight(
+                title=title,
+                content=content,
+                level="info"
+            ))
+
         # ========== 模块3：主力意图研判（深度分析）==========
         # 使用dim6的winner_position判定结果（已含D1交叉修正），不再独立判断
         winner_score = dim6["winner_position"]["score"]
@@ -1588,7 +1715,7 @@ class ChipDeepAnalyzer:
             ))
         elif "过热" in winner_desc or winner_rate > 80:
             insights.append(CoreInsight(
-                title="⚠️ 获利盘偏高 — 注意控制仓位",
+                title="⚠ 获利盘偏高 — 注意控制仓位",
                 content=f"获利盘 {winner_rate:.1f}% 处于偏高/过热水平，短期存在获利了结压力。"
                         f"建议：控制仓位不超过30%，若放量突破 {take_profit:.2f} 可加仓至50%。",
                 level="warning"
@@ -1618,9 +1745,9 @@ class ChipDeepAnalyzer:
                         f"建议：耐心持有，若放量突破 {take_profit:.2f} 可考虑加仓。",
                 level="success"
             ))
-        elif cost_rise_label == "⚠️":
+        elif cost_rise_label == "⚠":
             insights.append(CoreInsight(
-                title="⚠️ 成本抬升放缓 — 警惕动能衰减",
+                title="⚠ 成本抬升放缓 — 警惕动能衰减",
                 content=f"{cost_rise_detail}。成本抬升力度减弱，需观察后续是否重新加速。"
                         f"建议：持有者可适当降低仓位至 30%，等待方向明朗。",
                 level="warning"
@@ -1682,7 +1809,7 @@ class ChipDeepAnalyzer:
         # ========== 模块7：风险提示 ==========
         if not dim6["support_level"]["score"]:
             insights.append(CoreInsight(
-                title="⚠️ 下方支撑薄弱",
+                title="⚠ 下方支撑薄弱",
                 content="当前价下方筹码稀疏，形成'真空悬崖'。一旦跌破关键位可能引发连锁抛售。"
                         f"建议：严格止损在 {stop_loss:.2f}，不可扛单。",
                 level="danger"
