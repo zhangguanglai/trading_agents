@@ -501,9 +501,20 @@ class ChipDeepAnalyzer:
                 cost_rise_label = "⚠"
                 cost_rise_desc = "月度成本部分抬高"
             else:
-                cost_rise_score = 0.0
-                cost_rise_label = "❌"
-                cost_rise_desc = "月度成本基本没变"
+                # ┌─────────────────────────────────────────────────────┐
+                # │ v3 新增：成本未抬升时尝试 D1+D3 联合判定           │
+                # │ 当 D1 猛烈向上 + WR 极低 时 → "借恐慌收集型"       │
+                # │ （主力借股价下跌低位吸筹，成本被压在低位）          │
+                # └─────────────────────────────────────────────────────┘
+                if margin_score >= 1.5 and winner_rate < 30:
+                    cost_rise_score = 0.5
+                    cost_rise_label = "✅"
+                    cost_rise_desc = "借恐慌收集型（D1+WR联合判定）"
+                    cost_rise_type = ""  # 覆盖规则4b的"同步下跌型"，避免重复
+                else:
+                    cost_rise_score = 0.0
+                    cost_rise_label = "❌"
+                    cost_rise_desc = "月度成本基本没变"
         elif self.lookback_days <= 60:
             # 60日周期：季度标准
             if cost_rise > 15:
@@ -541,6 +552,12 @@ class ChipDeepAnalyzer:
                 cost_rise_label = "❌"
                 cost_rise_desc = "底部基本没变"
         
+        # 计算比值（成本 vs 股价涨幅比，归一化口径）— 用于显示
+        if price_rise != 0:
+            cost_pressure_ratio = (1 + cost_rise / 100) / (1 + price_rise / 100)
+        else:
+            cost_pressure_ratio = 1.0
+
         # 规则 4b：成本涨幅 vs 股价涨幅比值
         # 注意：当两者均为负值时，"相对抗跌""底部抬升"
         if price_rise != 0:
@@ -566,7 +583,7 @@ class ChipDeepAnalyzer:
             else:  # cost_rise < 0 and price_rise > 0
                 cost_rise_type = "背离回落型"  # 股价涨但成本降
         
-        cost_rise_detail = f"成本抬升{cost_rise:.1f}%，股价涨幅{price_rise:.1f}%，{cost_rise_type}，{cost_rise_desc}"
+        cost_rise_detail = f"成本抬升{cost_rise:.1f}%，股价涨幅{price_rise:.1f}%，比值{cost_pressure_ratio:.2f}，{cost_rise_type}，{cost_rise_desc}"
 
         # ⑤ 超跌程度（辅助维度，基础分 0.5）
         overshoot = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
