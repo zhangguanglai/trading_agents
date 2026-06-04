@@ -1116,7 +1116,7 @@ class ChipDeepAnalyzer:
             # 成本抬升权重仅0.5，辅助维度不应一票否决
             return 5, "成本未抬升（底部未抬高，该维度得0分）"
 
-        if dim6["winner_position"]["label"] == "❌" and "劣质低胜率" in dim6["winner_position"]["detail"]:
+        if dim6["winner_position"].get("label") == "❌" and "劣质低胜率" in dim6["winner_position"].get("detail", ""):
             # 劣质低胜率已在获利盘维度得0分，不再额外封顶
             return 5, "劣质低胜率（弱势股，该维度得0分）"
 
@@ -1560,7 +1560,7 @@ class ChipDeepAnalyzer:
         # 使用dim6的winner_position判定结果（已含D1交叉修正），不再独立判断
         winner_score = dim6["winner_position"]["score"]
         winner_label = dim6["winner_position"]["label"]
-        winner_desc = dim6["winner_position"]["desc"]
+        winner_desc = dim6["winner_position"].get("detail", "")
         density_score = dim6["chip_density"]["score"]
         margin_score = dim6["margin_change"]["score"]
         
