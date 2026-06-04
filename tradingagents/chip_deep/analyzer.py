@@ -377,45 +377,102 @@ class ChipDeepAnalyzer:
         if vacuum_risk:
             density_detail += " ⚠️真空悬崖"
 
-        # ③ 获利盘位置（重要维度，基础分 1.0）
-        # 技能文档标准：
-        # >90%: 极度过热 ❌⚠️
-        # 80%~90%: 过热 ⚠️
-        # 60%~80%: 偏暖 ✅
-        # 40%~60%: 均衡（最健康）✅
-        # 20%~40%: 偏冷 ✅
-        # <20%: 需区分优质/劣质
-        if winner_rate > 90:
-            winner_score = 0.0
-            winner_label = "❌⚠️"
-            winner_desc = "极度过热（不买入，持有者减仓）"
-        elif winner_rate > 80:
-            winner_score = 0.0
-            winner_label = "⚠️"
-            winner_desc = "过热（持有不加仓，设止盈）"
-        elif winner_rate > 60:
-            winner_score = 1.0
-            winner_label = "✅"
-            winner_desc = "偏暖（可持有，正常）"
-        elif winner_rate > 40:
-            winner_score = 1.0
-            winner_label = "✅"
-            winner_desc = "均衡（最健康，可买入或持有）"
-        elif winner_rate > 20:
-            winner_score = 1.0
-            winner_label = "✅"
-            winner_desc = "偏冷（可关注，等边际确认）"
-        else:  # < 20%
-            # 区分优质/劣质低胜率（传入周期成本抬升数据）
-            is_quality = self._is_quality_low_winner(perf_df, close, period_cost_rise)
-            if is_quality:
+        #  获利盘位置（重要维度，基础分 1.0）
+        # ⚠️ 关键修正：获利盘高低必须结合D1边际变化方向交叉判断（技能文档v2）
+        # 单边上涨中高位锁仓≠风险，高位派发才是
+        
+        if margin_score >= 2.0:
+            # === 情况A：筹码猛烈向上/锁仓（主力未出货）===
+            if winner_rate > 90:
                 winner_score = 1.0
                 winner_label = "✅"
-                winner_desc = "优质低胜率（主力洗盘，可关注抄底）"
-            else:
+                winner_desc = "高位锁仓（拉升中，持有待涨）"
+            elif winner_rate >= 80:
+                winner_score = 1.0
+                winner_label = "✅"
+                winner_desc = "高位锁仓（拉升中，持有）"
+            elif winner_rate >= 60:
+                winner_score = 1.0
+                winner_label = "✅"
+                winner_desc = "健康拉升（偏暖）"
+            elif winner_rate >= 40:
+                winner_score = 1.0
+                winner_label = "✅"
+                winner_desc = "均衡（最健康）"
+            elif winner_rate >= 20:
+                winner_score = 1.0
+                winner_label = "✅"
+                winner_desc = "偏冷（拉升中机会）"
+            else:  # < 20%
+                winner_score = 1.0
+                winner_label = "✅"
+                winner_desc = "砸盘吸筹（猛烈收集，抄底机会）"
+        
+        elif margin_score <= 0:
+            # === 情况B：筹码峰在下降（主力可能出货或无人接盘）===
+            if winner_rate > 90:
                 winner_score = 0.0
-                winner_label = "❌"
-                winner_desc = "劣质低胜率（弱势股，不碰）"
+                winner_label = "❌️"
+                winner_desc = "高位派发（减仓）"
+            elif winner_rate >= 80:
+                winner_score = 0.5
+                winner_label = "⚠️"
+                winner_desc = "过热+流出（谨慎）"
+            elif winner_rate >= 60:
+                winner_score = 0.5
+                winner_label = "⚠️"
+                winner_desc = "偏暖但流出（观望）"
+            elif winner_rate >= 40:
+                winner_score = 0.5
+                winner_label = "⚠️"
+                winner_desc = "均衡但流出（观望）"
+            elif winner_rate >= 20:
+                winner_score = 0.5
+                winner_label = "⚠️"
+                winner_desc = "偏冷+流出（弱势，等转正）"
+            else:  # < 20%
+                is_quality = self._is_quality_low_winner(perf_df, close, period_cost_rise)
+                if is_quality:
+                    winner_score = 1.0
+                    winner_label = "✅"
+                    winner_desc = "优质低胜率（紫金矿业型）"
+                else:
+                    winner_score = 0.0
+                    winner_label = "❌"
+                    winner_desc = "劣质低胜率（弱势股，不碰）"
+        
+        else:
+            # === 情况C：边际变化微弱（0 < score < 2），使用原规则 ===
+            if winner_rate > 90:
+                winner_score = 0.0
+                winner_label = "❌️"
+                winner_desc = "极度过热（不买入，持有者减仓）"
+            elif winner_rate > 80:
+                winner_score = 0.5
+                winner_label = "⚠️"
+                winner_desc = "过热（持有不加仓，设止盈）"
+            elif winner_rate > 60:
+                winner_score = 1.0
+                winner_label = "✅"
+                winner_desc = "偏暖（可持有，正常）"
+            elif winner_rate > 40:
+                winner_score = 1.0
+                winner_label = "✅"
+                winner_desc = "均衡（最健康，可买入或持有）"
+            elif winner_rate > 20:
+                winner_score = 1.0
+                winner_label = "✅"
+                winner_desc = "偏冷（可关注，等边际确认）"
+            else:  # < 20%
+                is_quality = self._is_quality_low_winner(perf_df, close, period_cost_rise)
+                if is_quality:
+                    winner_score = 1.0
+                    winner_label = "✅"
+                    winner_desc = "优质低胜率（主力洗盘，可关注抄底）"
+                else:
+                    winner_score = 0.0
+                    winner_label = "❌"
+                    winner_desc = "劣质低胜率（弱势股，不碰）"
         winner_detail = f"获利盘 {winner_rate:.1f}%，{winner_desc}"
 
         # ④ 成本结构抬升（辅助维度，基础分 0.5）
@@ -481,14 +538,29 @@ class ChipDeepAnalyzer:
                 cost_rise_desc = "底部基本没变"
         
         # 规则 4b：成本涨幅 vs 股价涨幅比值
+        # 注意：当两者均为负值时，"相对抗跌""底部抬升"
         if price_rise != 0:
             ratio = cost_rise / price_rise
-            if 0.9 <= ratio <= 1.1:
-                cost_rise_type = "健康换手型"
-            elif ratio < 0.9:
-                cost_rise_type = "底部抬升型"
-            else:
-                cost_rise_type = "追高套牢型"
+            # 仅当两者同向且成本抬升为正时才判断类型
+            if cost_rise > 0 and price_rise > 0:
+                if 0.9 <= ratio <= 1.1:
+                    cost_rise_type = "健康换手型"
+                elif ratio < 0.9:
+                    cost_rise_type = "底部抬升型"
+                else:
+                    cost_rise_type = "追高套牢型"
+            elif cost_rise < 0 and price_rise < 0:
+                # 双负：两者都在下跌，不存在"抬升"
+                if abs(ratio - 1) <= 0.2:
+                    cost_rise_type = "同步下跌型"
+                elif ratio < 1:
+                    cost_rise_type = "成本抗跌型"  # 成本跌幅小，相对抗跌
+                else:
+                    cost_rise_type = "加速下跌型"  # 成本跌幅更大
+            elif cost_rise > 0 and price_rise < 0:
+                cost_rise_type = "逆市抬升型"  # 股价跌但成本升
+            else:  # cost_rise < 0 and price_rise > 0
+                cost_rise_type = "背离回落型"  # 股价涨但成本降
         
         cost_rise_detail = f"成本抬升{cost_rise:.1f}%，股价涨幅{price_rise:.1f}%，{cost_rise_type}，{cost_rise_desc}"
 
@@ -1484,40 +1556,41 @@ class ChipDeepAnalyzer:
                 level="info"
             ))
         
-        # ========== 模块3：主力意图研判（深度分析） ==========
+        # ========== 模块3：主力意图研判（深度分析）==========
+        # 使用dim6的winner_position判定结果（已含D1交叉修正），不再独立判断
+        winner_score = dim6["winner_position"]["score"]
+        winner_label = dim6["winner_position"]["label"]
+        winner_desc = dim6["winner_position"]["desc"]
         density_score = dim6["chip_density"]["score"]
         margin_score = dim6["margin_change"]["score"]
-        winner_score = dim6["winner_position"]["score"]
-        cost_rise_score = dim6["cost_rise"]["score"]
         
-        if density_score and cost_rise_score and price_diff < 0:
-            # 价低于成本 + 筹码集中 + 成本抬升 = 主力吸筹
-            if margin_score >= 2.0:
-                insights.append(CoreInsight(
-                    title="🔴 主力积极吸筹 — 建议关注",
-                    content=f"当前价 {close:.2f} 低于平均成本 {weight_avg:.2f}（折价{abs(price_diff):.1f}%），筹码集中度良好且底部持续抬高。边际变化积极确认资金主动流入。"
-                            f"建议：若当前无仓位，可在 {close:.2f} 附近开始分批建仓（30%-50%目标仓位），止损设在 {stop_loss:.2f}。",
-                    level="success"
-                ))
-            else:
-                insights.append(CoreInsight(
-                    title="主力可能处于吸筹初期",
-                    content=f"筹码集中且成本抬升，但边际变化尚温和，可能是吸筹初期。建议：保持关注，若后续出现放量阳线确认再介入。",
-                    level="info"
-                ))
-        elif winner_rate > 85:
-            # 获利盘极高，风险信号
+        # D1交叉修正后的获利盘判定直接用于洞察
+        if "高位锁仓" in winner_desc or "拉升中" in winner_desc:
             insights.append(CoreInsight(
-                title="⚠️ 获利盘极高 — 建议减仓或止盈",
-                content=f"获利盘高达 {winner_rate:.1f}%，绝大多数持仓者处于盈利状态，抛压随时可能出现。"
-                        f"建议：已有仓位者建议在 {take_profit:.2f} 附近逢高减仓（至少减仓 50%），锁定利润；无仓位者不建议追高。",
+                title="✅ 高位锁仓 — 拉升中可持有",
+                content=f"获利盘 {winner_rate:.1f}%，结合筹码峰向上移动确认主力未出货，属于拉升中的健康锁仓。"
+                        f"建议：已有仓位者可持有，关注 {take_profit:.2f} 附近的压力；无仓位者不建议追高，等待回调至 {strongest_support:.2f} 附近再考虑。",
+                level="success"
+            ))
+        elif "高位派发" in winner_desc:
+            insights.append(CoreInsight(
+                title="❌ 获利盘极高 — 建议减仓或止盈",
+                content=f"获利盘 {winner_rate:.1f}%，筹码峰在下降确认主力在出货。"
+                        f"建议：已有仓位者建议在 {take_profit:.2f} 附近逢高减仓（至少减仓50%），锁定利润；无仓位者不建议追高。",
                 level="danger"
             ))
-        elif winner_rate > 70:
+        elif "砸盘吸筹" in winner_desc:
             insights.append(CoreInsight(
-                title="获利盘偏高 — 注意控制仓位",
-                content=f"获利盘 {winner_rate:.1f}% 处于偏高水平，短期存在获利了结压力。"
-                        f"建议：控制仓位不超过 30%，若突破 {take_profit:.2f} 可加仓至 50%。",
+                title="🔴 主力砸盘吸筹 — 抄底机会",
+                content=f"获利盘仅 {winner_rate:.1f}%，但筹码峰猛烈向上移动确认主力在收集筹码。"
+                        f"建议：可在 {close:.2f} 附近分批建仓（30%-50%目标仓位），止损设在 {stop_loss:.2f}。",
+                level="success"
+            ))
+        elif "过热" in winner_desc or winner_rate > 80:
+            insights.append(CoreInsight(
+                title="⚠️ 获利盘偏高 — 注意控制仓位",
+                content=f"获利盘 {winner_rate:.1f}% 处于偏高/过热水平，短期存在获利了结压力。"
+                        f"建议：控制仓位不超过30%，若放量突破 {take_profit:.2f} 可加仓至50%。",
                 level="warning"
             ))
         elif not density_score:
@@ -1580,6 +1653,7 @@ class ChipDeepAnalyzer:
                 ))
         
         # ========== 模块6：综合操作策略 ==========
+        # 使用与_build_result一致的rating计算
         if rating >= 4:
             insights.append(CoreInsight(
                 title=f"⭐⭐⭐⭐ 综合评级优秀 — 建议积极布局",
@@ -1588,11 +1662,11 @@ class ChipDeepAnalyzer:
                         f"关键价位：止损 {stop_loss:.2f}，止盈 {take_profit:.2f}。",
                 level="success"
             ))
-        elif rating == 3:
+        elif rating >= 3:
             insights.append(CoreInsight(
                 title=f"⭐⭐⭐ 综合评级中等 — 建议谨慎参与",
                 content=f"六维评分 {total:.1f}/5.5，评级 {rating} 星。部分指标向好但存在分歧。"
-                        f"操作建议：小仓位试探（不超过 30%），等待筹码结构改善或出现放量阳线信号后再加仓。"
+                        f"操作建议：小仓位试探（不超过30%），等待筹码结构改善或出现放量阳线信号后再加仓。"
                         f"关键价位：止损 {stop_loss:.2f}，止盈 {take_profit:.2f}。",
                 level="info"
             ))
