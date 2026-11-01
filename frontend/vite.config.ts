@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 import { execSync } from 'node:child_process'
 
+const API_PROXY_URL = process.env.API_PROXY_URL || API_PROXY_URL
+
 function runGit(cmd: string): string {
   try {
     return execSync(cmd, { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
@@ -49,24 +51,24 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: API_PROXY_URL,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
       '/v1': {
-        target: 'http://localhost:8000',
+        target: API_PROXY_URL,
         changeOrigin: true,
       },
       '/healthz': {
-        target: 'http://localhost:8000',
+        target: API_PROXY_URL,
         changeOrigin: true,
       },
       '/openapi.json': {
-        target: 'http://localhost:8000',
+        target: API_PROXY_URL,
         changeOrigin: true,
       },
       '/docs': {
-        target: 'http://localhost:8000',
+        target: API_PROXY_URL,
         changeOrigin: true,
       },
     },

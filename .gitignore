@@ -227,6 +227,7 @@ __marimo__/
 **/data_cache/
 
 # Runtime artifacts
+data/
 eval_results/
 reports/
 results/

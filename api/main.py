@@ -43,21 +43,6 @@ from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, Impo
 from api.job_store import get_job_store as _new_job_store
 from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service
 
-def _get_real_ip(request: Request) -> Optional[str]:
-    """Extract real client IP, preferring Cloudflare/proxy headers."""
-    if request is None:
-        return None
-    # Cloudflare Tunnel injects the real client IP here
-    ip = request.headers.get("CF-Connecting-IP")
-    if ip:
-        return ip.strip()
-    # Standard proxy header fallback
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else None
-
-
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.graph.data_collector import DataCollector
@@ -93,13 +78,17 @@ def _cors_allow_origin_regex() -> str | None:
 
 
 def _report_version_stats() -> None:
-    """Report anonymous version stats to the official site."""
+    """Report anonymous version stats to a configurable endpoint."""
     import threading, uuid
+
+    url = os.getenv("VERSION_STATS_URL", "").strip()
+    if not url:
+        return
 
     def _send():
         try:
             requests.post(
-                "https://app.510168.xyz/api/version-stats",
+                url,
                 json={"v": APP_VERSION, "nonce": uuid.uuid4().hex},
                 timeout=30,
             )
@@ -199,6 +188,10 @@ async def _run_manual_trigger(
         logger.error(f"[Manual Trigger] Failed {symbol}: {e}\n{traceback.format_exc()}")
         with get_db_ctx() as db:
             scheduled_service.record_manual_test_result(db, task_id, "failed")
+
+
+# Alias for backward compatibility with tests that patch this name.
+_run_scheduled_analysis_once = _run_manual_trigger
 
 
 @asynccontextmanager
@@ -482,7 +475,6 @@ def _resolve_watchlist_identifier(
     return None, None, f"未识别的股票代码或名称: {token}"
 
 
-_auth_scheme = HTTPBearer(auto_error=False)
 
 FIXED_TEAMS = {
     "Analyst Team": [
@@ -991,68 +983,6 @@ def _build_runtime_config(overrides: Dict[str, Any], user_id: Optional[str] = No
         config["quick_think_llm"] = deep
 
     return config
-
-
-class RequireUser:
-    def __init__(self, allow_api_token: bool = True):
-        self.allow_api_token = allow_api_token
-
-    def __call__(
-        self,
-        credentials: Optional[HTTPAuthorizationCredentials] = Depends(_auth_scheme),
-    ) -> UserDB:
-        if not credentials:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
-
-        token = credentials.credentials
-
-        with get_db_ctx() as db:
-            # 1. 优先尝试 JWT (网页登录)
-            try:
-                payload = auth_service.decode_access_token(token)
-                user_id = str(payload.get("sub") or "")
-                user = auth_service.get_user_by_id(db, user_id)
-                if user and user.is_active:
-                    # expunge 使 ORM 对象脱离 session，close 后仍可访问属性
-                    db.expunge(user)
-                    return user
-            except Exception:
-                # 不是有效的 JWT 或已过期，尝试 API Token
-                pass
-
-            # 2. 尝试 API Token (仅在允许时)
-            if self.allow_api_token and token.startswith(token_service.TOKEN_PREFIX):
-                user = token_service.verify_token(db, token)
-                if user and user.is_active:
-                    db.expunge(user)
-                    return user
-
-        detail = "身份验证失败或该接口不支持 API Token 访问" if self.allow_api_token else "该接口仅限网页端登录访问"
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
-
-
-# 快捷依赖定义
-_require_api_user = RequireUser(allow_api_token=True)    # 允许 API Token
-_require_web_user = RequireUser(allow_api_token=False)   # 仅限网页登录
-
-
-def _optional_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_auth_scheme),
-) -> Optional[UserDB]:
-    if not credentials:
-        return None
-    try:
-        payload = auth_service.decode_access_token(credentials.credentials)
-    except Exception:
-        return None
-    user_id = str(payload.get("sub") or "")
-    if not user_id:
-        return None
-    with get_db_ctx() as db:
-        user = auth_service.get_user_by_id(db, user_id)
-        if user:
-            db.expunge(user)
-        return user
 
 
 def _set_job(job_key: str, **kwargs) -> None:
@@ -2644,284 +2574,6 @@ async def _stream_job_events(job_id: str):
         return
 
 
-@app.get("/healthz")
-def healthz() -> Dict[str, str]:
-    return {"status": "ok"}
-
-
-# Simple in-memory rate limiter for version stats: {ip: last_timestamp}
-_vs_rate_limit: Dict[str, float] = {}
-_VS_RATE_INTERVAL = 3600  # at most once per hour per IP
-
-
-@app.post("/api/version-stats")
-def version_stats(payload: Dict[str, Any] = Body(...), request: Request = None, db: Session = Depends(get_db)):
-    """Collect anonymous version statistics from deployed instances."""
-    remote_ip = _get_real_ip(request)
-
-    # Rate limit by IP
-    now = time.time()
-    if remote_ip:
-        last = _vs_rate_limit.get(remote_ip, 0)
-        if now - last < _VS_RATE_INTERVAL:
-            return {"status": "ok"}
-        _vs_rate_limit[remote_ip] = now
-
-    record = VersionStatsDB(
-        version=str(payload.get("v", ""))[:50],
-        nonce=str(payload.get("nonce", ""))[:64],
-        remote_ip=remote_ip,
-    )
-    db.add(record)
-    db.commit()
-    return {"status": "ok"}
-
-
-@app.get("/v1/market/kline", response_model=KlineResponse)
-def get_kline(
-    symbol: str,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-) -> KlineResponse:
-    end = end_date or cn_today_str()
-    if start_date:
-        start = start_date
-    else:
-        start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=120)).strftime("%Y-%m-%d")
-
-    if _is_cn_index_symbol(symbol):
-        candles = _fetch_index_kline(symbol, start, end)
-    else:
-        # Normalize symbol (convert "阳光电源" -> "300274.SZ")
-        symbol = _normalize_symbol(symbol)
-        config = _build_runtime_config({})
-        set_config(config)
-        raw = route_to_vendor("get_stock_data", symbol, start, end)
-        candles = _parse_stock_csv(raw)
-    if not candles:
-        raise HTTPException(status_code=404, detail="no kline data")
-    return KlineResponse(
-        symbol=symbol,
-        start_date=start,
-        end_date=end,
-        candles=candles,
-    )
-
-
-def _normalize_ths_code(code: str) -> str:
-    """Convert THS/XQ code like SH601xxx → 601xxx.SH"""
-    code = str(code).strip()
-    if code.upper().startswith("SH"):
-        return f"{code[2:]}.SH"
-    if code.upper().startswith("SZ"):
-        return f"{code[2:]}.SZ"
-    if code.upper().startswith("BJ") or code.upper().startswith("NQ"):
-        return f"{code[2:]}.BJ"
-    # Bare 6-digit code — guess exchange
-    if code.startswith(("6", "5")):
-        return f"{code}.SH"
-    if code.startswith(("0", "3", "2")):
-        return f"{code}.SZ"
-    return code
-
-
-@app.get("/v1/market/hot-stocks")
-def get_hot_stocks(source: str = "em", limit: int = 30) -> Dict:
-    """Return hot A-share stocks from different sources.
-    
-    Args:
-        source: Data source selection
-            - 'em': 东方财富热榜 (EastMoney hot stocks)
-            - 'xq': 雪球热门 (Xueqiu most-followed stocks)
-            - 'ths': 连涨榜 (Consecutive rising stocks, not general hot list)
-        limit: Maximum number of stocks to return
-    
-    Returns:
-        Dict with stocks list, total count, source info, and fallback status
-    """
-    import akshare as ak
-
-    # 定义数据源尝试顺序（如果主数据源失败，自动尝试备用源）
-    source_configs = {
-        "em": ("stock_hot_rank_em", None, "东方财富热榜"),
-        "xq": ("stock_hot_follow_xq", "最热门", "雪球热门"),
-        "ths": ("stock_rank_lxsz_ths", None, "连涨榜"),
-    }
-
-    if source not in source_configs:
-        raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
-
-    # 尝试主数据源，失败则尝试其他源
-    sources_to_try = [source] + [s for s in ["xq", "em", "ths"] if s != source]
-    last_error = None
-
-    for src in sources_to_try:
-        try:
-            func_name, param, desc = source_configs[src]
-            func = getattr(ak, func_name)
-
-            # 调用 akshare 函数
-            if param:
-                df = func(symbol=param).head(limit)
-            else:
-                df = func().head(limit)
-
-            stocks = []
-
-            if src == "em":
-                for i, (_, row) in enumerate(df.iterrows()):
-                    stocks.append({
-                        "rank": i + 1,
-                        "symbol": _normalize_ths_code(str(row.get("代码", ""))),
-                        "name": str(row.get("股票名称", "")),
-                        "price": float(row.get("最新价", 0) or 0),
-                        "change": float(row.get("涨跌额", 0) or 0),
-                        "change_pct": float(row.get("涨跌幅", 0) or 0),
-                        "extra": "",
-                    })
-
-            elif src == "xq":
-                for i, (_, row) in enumerate(df.iterrows()):
-                    stocks.append({
-                        "rank": i + 1,
-                        "symbol": _normalize_ths_code(str(row.get("股票代码", ""))),
-                        "name": str(row.get("股票简称", "")),
-                        "price": float(row.get("最新价", 0) or 0),
-                        "change": 0.0,
-                        "change_pct": 0.0,
-                        "extra": f"关注 {int(row.get('关注', 0)):,}",
-                    })
-
-            elif src == "ths":
-                for i, (_, row) in enumerate(df.iterrows()):
-                    days = int(row.get("连涨天数", 0) or 0)
-                    change_pct = float(row.get("连续涨跌幅", 0) or 0)
-                    stocks.append({
-                        "rank": i + 1,
-                        "symbol": _normalize_ths_code(str(row.get("股票代码", ""))),
-                        "name": str(row.get("股票简称", "")),
-                        "price": float(row.get("收盘价", 0) or 0),
-                        "change": 0.0,
-                        "change_pct": change_pct,
-                        "extra": f"连涨{days}天",
-                    })
-
-            # 成功获取数据
-            fallback_msg = f" (fallback from {source_configs[source][2]})" if src != source else ""
-            _log(f"Hot stocks: successfully fetched from {desc}{fallback_msg}")
-            return {
-                "stocks": stocks,
-                "total": len(stocks),
-                "source": src,
-                "requested_source": source,
-                "fallback": src != source,
-            }
-
-        except Exception as e:
-            last_error = e
-            _log(f"Hot stocks: {desc} failed - {type(e).__name__}: {str(e)[:100]}")
-            continue
-
-    # 所有数据源都失败
-    raise HTTPException(
-        status_code=503,
-        detail=f"All data sources failed. Last error: {type(last_error).__name__}: {str(last_error)[:200]}"
-    )
-
-
-@app.post("/v1/analyze", response_model=AnalyzeResponse)
-async def analyze(
-    request: AnalyzeRequest,
-    current_user: UserDB = Depends(_require_api_user),
-) -> AnalyzeResponse:
-    with get_db_ctx() as db:
-        merged_user_context = _compose_analysis_user_context(
-            db,
-            current_user.id,
-            request.symbol,
-            explicit_context=_extract_request_user_context(request),
-        )
-    _apply_user_context_to_request(request, merged_user_context)
-
-    job_id = uuid4().hex
-    now = _utcnow_iso()
-    _set_job(
-        job_id,
-        job_id=job_id,
-        user_id=current_user.id,
-        status="pending",
-        created_at=now,
-        started_at=None,
-        finished_at=None,
-        symbol=request.symbol,
-        trade_date=request.trade_date,
-        error=None,
-        result=None,
-        decision=None,
-    )
-    _emit_job_event(
-        job_id,
-        "job.created",
-        {"job_id": job_id, "symbol": request.symbol, "trade_date": request.trade_date},
-    )
-    if request.dry_run:
-        await _run_job(job_id, request, True, True, current_user.id, "api")
-        final_status = _get_job(job_id).get("status", "completed")
-        return AnalyzeResponse(job_id=job_id, status=final_status, created_at=now)
-    _create_tracked_task(_run_job(job_id, request, True, True, current_user.id, "api"))
-    return AnalyzeResponse(job_id=job_id, status="pending", created_at=now)
-
-
-def _require_job_owner(job_id: str, current_user: UserDB) -> Dict[str, Any]:
-    job = _get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
-    owner_id = job.get("user_id")
-    if owner_id and owner_id != current_user.id:
-        raise HTTPException(status_code=404, detail="job not found")
-    return job
-
-
-@app.get("/v1/jobs/{job_id}", response_model=JobStatusResponse)
-def get_job_status(job_id: str, current_user: UserDB = Depends(_require_api_user)) -> JobStatusResponse:
-    job = _require_job_owner(job_id, current_user)
-    return JobStatusResponse(
-        job_id=job["job_id"],
-        status=job["status"],
-        created_at=job["created_at"],
-        started_at=job.get("started_at"),
-        finished_at=job.get("finished_at"),
-        symbol=job["symbol"],
-        trade_date=job["trade_date"],
-        error=job.get("error"),
-        waiting_ahead_count=job.get("waiting_ahead_count"),
-        scheduled_running_count=job.get("scheduled_running_count"),
-        scheduled_concurrency_limit=job.get("scheduled_concurrency_limit"),
-    )
-
-
-@app.get("/v1/jobs/{job_id}/result")
-def get_job_result(job_id: str, current_user: UserDB = Depends(_require_api_user)) -> Dict[str, Any]:
-    job = _require_job_owner(job_id, current_user)
-    if job["status"] != "completed":
-        raise HTTPException(status_code=409, detail=f"job status is {job['status']}")
-    return {
-        "job_id": job_id,
-        "status": job["status"],
-        "decision": job.get("decision"),
-        "result": job.get("result"),
-        "finished_at": job.get("finished_at"),
-    }
-
-
-@app.get("/v1/jobs/{job_id}/events")
-def stream_job_events(job_id: str, current_user: UserDB = Depends(_require_api_user)):
-    _require_job_owner(job_id, current_user)
-    return StreamingResponse(
-        _stream_job_events(job_id),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-    )
 
 
 async def _ai_extract_symbol_and_date_streaming(
@@ -3135,412 +2787,7 @@ def _ai_extract_symbol_and_date(
     _log(f"[StockExtract] Could not resolve '{llm_name}' to a stock code")
     return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
-@app.post("/v1/chat/completions")
-async def chat_completions(
-    request: ChatCompletionRequest,
-    current_user: UserDB = Depends(_require_api_user),
-):
-    text = _extract_chat_text(request.messages)
-    config = await asyncio.to_thread(_build_runtime_config, request.config_overrides, user_id=current_user.id)
 
-    # ── 流式模式：立刻返回 SSE 流，在后台异步提取意图再启动任务 ──────────────────
-    # 这样用户提交查询后立刻收到 job.ready，不用等待 thinking 模型的 StockExtract。
-    if request.stream:
-        job_id = uuid4().hex
-
-        async def _extract_and_run():
-            try:
-                symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = \
-                    await _ai_extract_symbol_and_date_streaming(text, config, job_id)
-
-                if not symbol:
-                    _emit_job_event(job_id, "job.failed", {
-                        "error": "抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。"
-                    })
-                    return
-
-                pre_intent = {
-                    "raw_query": text,
-                    "ticker": symbol,
-                    "horizons": horizons,
-                    "focus_areas": focus_areas,
-                    "specific_questions": specific_questions,
-                }
-                with get_db_ctx() as db:
-                    merged_user_context = _compose_analysis_user_context(
-                        db,
-                        current_user.id,
-                        symbol,
-                        explicit_context=_extract_request_user_context(request),
-                        inferred_context=inferred_user_context,
-                    )
-                pre_intent["user_context"] = merged_user_context
-                analyze_req = AnalyzeRequest(
-                    symbol=symbol,
-                    trade_date=trade_date or cn_today_str(),
-                    selected_analysts=request.selected_analysts,
-                    config_overrides=request.config_overrides,
-                    dry_run=request.dry_run,
-                    query=text,
-                    horizons=horizons,
-                    user_intent=pre_intent,
-                    objective=merged_user_context.get("objective"),
-                    risk_profile=merged_user_context.get("risk_profile"),
-                    investment_horizon=merged_user_context.get("investment_horizon"),
-                    cash_available=merged_user_context.get("cash_available"),
-                    current_position=merged_user_context.get("current_position"),
-                    current_position_pct=merged_user_context.get("current_position_pct"),
-                    average_cost=merged_user_context.get("average_cost"),
-                    max_loss_pct=merged_user_context.get("max_loss_pct"),
-                    constraints=merged_user_context.get("constraints", []),
-                    user_notes=merged_user_context.get("user_notes"),
-                )
-                now = _utcnow_iso()
-                _set_job(
-                    job_id,
-                    job_id=job_id,
-                    user_id=current_user.id,
-                    status="pending",
-                    created_at=now,
-                    started_at=None,
-                    finished_at=None,
-                    symbol=analyze_req.symbol,
-                    trade_date=analyze_req.trade_date,
-                    error=None,
-                    result=None,
-                    decision=None,
-                )
-                _emit_job_event(
-                    job_id,
-                    "job.created",
-                    {"job_id": job_id, "symbol": analyze_req.symbol, "trade_date": analyze_req.trade_date},
-                )
-                await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
-            except Exception as exc:
-                import traceback
-                _log(f"[chat] _extract_and_run failed: {exc}\n{traceback.format_exc()}")
-                _emit_job_event(job_id, "job.failed", {"error": str(exc)})
-
-        _create_tracked_task(_extract_and_run())
-        return StreamingResponse(
-            _stream_job_events(job_id),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-        )
-
-    # ── 非流式模式：保持原有阻塞行为 ─────────────────────────────────────────────
-    symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = \
-        await asyncio.to_thread(_ai_extract_symbol_and_date, text, config)
-
-    if not symbol:
-        raise HTTPException(status_code=400, detail="抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。")
-
-    pre_intent = {
-        "raw_query": text,
-        "ticker": symbol,
-        "horizons": horizons,
-        "focus_areas": focus_areas,
-        "specific_questions": specific_questions,
-    }
-    with get_db_ctx() as db:
-        merged_user_context = _compose_analysis_user_context(
-            db,
-            current_user.id,
-            symbol,
-            explicit_context=_extract_request_user_context(request),
-            inferred_context=inferred_user_context,
-        )
-    pre_intent["user_context"] = merged_user_context
-    analyze_req = AnalyzeRequest(
-        symbol=symbol,
-        trade_date=trade_date or cn_today_str(),
-        selected_analysts=request.selected_analysts,
-        config_overrides=request.config_overrides,
-        dry_run=request.dry_run,
-        query=text,
-        horizons=horizons,
-        user_intent=pre_intent,
-        objective=merged_user_context.get("objective"),
-        risk_profile=merged_user_context.get("risk_profile"),
-        investment_horizon=merged_user_context.get("investment_horizon"),
-        cash_available=merged_user_context.get("cash_available"),
-        current_position=merged_user_context.get("current_position"),
-        current_position_pct=merged_user_context.get("current_position_pct"),
-        average_cost=merged_user_context.get("average_cost"),
-        max_loss_pct=merged_user_context.get("max_loss_pct"),
-        constraints=merged_user_context.get("constraints", []),
-        user_notes=merged_user_context.get("user_notes"),
-    )
-    job_id = uuid4().hex
-    now = _utcnow_iso()
-    _set_job(
-        job_id,
-        job_id=job_id,
-        user_id=current_user.id,
-        status="pending",
-        created_at=now,
-        started_at=None,
-        finished_at=None,
-        symbol=analyze_req.symbol,
-        trade_date=analyze_req.trade_date,
-        error=None,
-        result=None,
-        decision=None,
-    )
-    _emit_job_event(
-        job_id,
-        "job.created",
-        {"job_id": job_id, "symbol": analyze_req.symbol, "trade_date": analyze_req.trade_date},
-    )
-    if request.dry_run:
-        await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
-        status_text = _get_job(job_id).get("status", "completed")
-        decision_text = _get_job(job_id).get("decision", "DRY_RUN")
-        return {
-            "id": f"chatcmpl-{job_id}",
-            "object": "chat.completion",
-            "created": int(datetime.now().timestamp()),
-            "model": request.model,
-            "choices": [
-                {
-                    "index": 0,
-                    "finish_reason": "stop",
-                    "message": {
-                        "role": "assistant",
-                        "content": (
-                            f"已完成分析任务：{job_id}\n"
-                            f"symbol={analyze_req.symbol}, trade_date={analyze_req.trade_date}\n"
-                            f"status={status_text}, decision={decision_text}"
-                        ),
-                    },
-                }
-            ],
-        }
-    _create_tracked_task(_run_job(job_id, analyze_req, True, True, current_user.id, "chat"))
-    return {
-        "id": f"chatcmpl-{job_id}",
-        "object": "chat.completion",
-        "created": int(datetime.now().timestamp()),
-        "model": request.model,
-        "choices": [
-            {
-                "index": 0,
-                "finish_reason": "stop",
-                "message": {
-                    "role": "assistant",
-                    "content": (
-                        f"已启动分析任务：{job_id}\n"
-                        f"symbol={analyze_req.symbol}, trade_date={analyze_req.trade_date}\n"
-                        f"可通过 /v1/jobs/{job_id} 与 /v1/jobs/{job_id}/result 查询结果。"
-                    ),
-                },
-            }
-        ],
-    }
-
-
-# Report API Endpoints
-@app.post("/v1/reports", response_model=ReportResponse)
-def create_report_endpoint(
-    request: ReportCreateRequest,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_api_user),
-):
-    """手动创建报告（通常由系统自动调用）."""
-    report = report_service.create_report(
-        db=db,
-        symbol=request.symbol,
-        trade_date=request.trade_date,
-        decision=request.decision,
-        result_data=request.result_data,
-        user_id=current_user.id,
-    )
-    return report
-
-
-@app.get("/v1/announcements/latest", response_model=LatestAnnouncementResponse)
-def get_latest_announcement():
-    return {"announcement": _load_latest_announcement()}
-
-
-@app.get("/v1/reports", response_model=ReportListResponse)
-def list_reports(
-    symbol: Optional[str] = Query(None, description="按股票代码筛选"),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_api_user),
-):
-    """获取报告列表."""
-    total = report_service.count_reports(db=db, user_id=current_user.id, symbol=symbol)
-    reports = report_service.get_reports_by_user(
-        db=db,
-        user_id=current_user.id,
-        symbol=symbol,
-        skip=skip,
-        limit=limit,
-    )
-    code_to_name = _get_reverse_stock_map_cached_only()
-    for r in reports:
-        r.name = code_to_name.get(r.symbol, r.symbol)
-        _attach_job_runtime_state(r, str(getattr(r, "id", "")))
-    return {"total": total, "reports": reports}
-
-
-@app.post("/v1/reports/latest-by-symbols", response_model=LatestReportsBySymbolsResponse)
-def list_latest_reports_by_symbols(
-    body: LatestReportsBySymbolsRequest,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_api_user),
-):
-    reports = report_service.get_latest_reports_by_symbols(
-        db=db,
-        user_id=current_user.id,
-        symbols=body.symbols,
-    )
-    return {"reports": reports}
-
-
-@app.get("/v1/reports/{report_id}", response_model=ReportDetailResponse)
-def get_report_endpoint(
-    report_id: str,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_api_user),
-):
-    """获取报告详情."""
-    report = report_service.get_report(db, report_id, user_id=current_user.id)
-    if not report:
-        raise HTTPException(status_code=404, detail="报告不存在")
-    if str(report.status or "") in report_service.ACTIVE_REPORT_STATUSES and not _get_job(report_id):
-        report = report_service.finalize_orphan_report(db, report)
-    code_to_name = _get_reverse_stock_map()
-    report.name = code_to_name.get(report.symbol, report.symbol)
-    _attach_job_runtime_state(report, report_id)
-    return report
-
-
-@app.delete("/v1/reports/{report_id}")
-def delete_report_endpoint(
-    report_id: str,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_api_user),
-):
-    """删除报告."""
-    success = report_service.delete_report(db, report_id, user_id=current_user.id)
-    if not success:
-        raise HTTPException(status_code=404, detail="报告不存在")
-    return {"message": "报告已删除"}
-
-
-@app.post("/v1/reports/batch/delete", response_model=ReportBatchDeleteResponse)
-def batch_delete_reports_endpoint(
-    body: ReportBatchDeleteRequest,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_api_user),
-):
-    try:
-        return report_service.batch_delete_reports(db, body.report_ids, user_id=current_user.id)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
-# ─── API Token Endpoints ────────────────────────────────────────────────────
-
-@app.get("/v1/tokens", response_model=List[UserTokenListItem])
-def list_tokens(
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_web_user),
-):
-    """获取当前用户的所有 API Token（不返回完整 token）。"""
-    return token_service.list_user_tokens(db, current_user.id)
-
-
-@app.post("/v1/tokens", response_model=UserTokenResponse)
-def create_token(
-    request: UserTokenCreateRequest,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_web_user),
-):
-    """创建一个新的 API Token。完整 token 仅在此接口返回一次。"""
-    try:
-        return token_service.create_token(db, current_user.id, request.name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.delete("/v1/tokens/{token_id}")
-def delete_token(
-    token_id: str,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_web_user),
-):
-    """吊销并删除一个 API Token。"""
-    success = token_service.delete_token(db, current_user.id, token_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Token 不存在")
-    return {"message": "Token 已吊销"}
-
-
-# ─── Backtest Endpoints ───────────────────────────────────────────────────────
-
-from api.services import backtest_service as _bt
-
-
-class BacktestRequest(BaseModel):
-    symbol: str
-    start_date: str
-    end_date: str
-    selected_analysts: List[str] = ["market", "news", "fundamentals", "sentiment"]
-    hold_days: int = 5
-    sample_interval: int = 7
-    config_overrides: Optional[Dict[str, Any]] = None
-
-
-@app.post("/v1/backtest")
-def submit_backtest(
-    request: BacktestRequest,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_api_user),
-) -> Dict:
-    """提交历史回测任务，返回 job_id."""
-    config = _build_runtime_config(request.config_overrides or {}, user_id=current_user.id, db=db)
-    job_id = _bt.submit(
-        symbol=request.symbol,
-        start_date=request.start_date,
-        end_date=request.end_date,
-        selected_analysts=request.selected_analysts,
-        hold_days=request.hold_days,
-        sample_interval=request.sample_interval,
-        config=config,
-    )
-    return {"job_id": job_id, "status": "pending"}
-
-
-@app.get("/v1/backtest")
-def list_backtests() -> Dict:
-    """列出所有回测任务."""
-    jobs = _bt.list_jobs()
-    return {"jobs": jobs, "total": len(jobs)}
-
-
-@app.get("/v1/backtest/{job_id}")
-def get_backtest(job_id: str) -> Dict:
-    """获取回测任务状态和结果."""
-    job = _bt.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="回测任务不存在")
-    return job
-
-
-@app.delete("/v1/backtest/{job_id}")
-def delete_backtest(job_id: str) -> Dict:
-    """删除回测任务."""
-    if not _bt.delete_job(job_id):
-        raise HTTPException(status_code=404, detail="回测任务不存在")
-    return {"message": "已删除"}
-
-
-# ─── Runtime Config Endpoints ────────────────────────────────────────────────
 
 _CONFIG_ALLOWED_KEYS = {
     "llm_provider", "deep_think_llm", "quick_think_llm",
@@ -3801,225 +3048,137 @@ def _config_response_for_user(user: Optional[UserDB], db: Session) -> UserRuntim
     )
 
 
-@app.post("/v1/auth/request-code")
-def request_login_code(request: AuthRequestCodeRequest):
-    email = auth_service.normalize_email(request.email)
-    if not re.match(r"^[^@\s]+@[^@\s.]+\.[^@\s.]+$", email):
-        raise HTTPException(status_code=400, detail="邮箱格式不正确")
-    with get_db_ctx() as db:
-        code = auth_service.upsert_login_code(db, email)
-    # DB session 已释放，SMTP 不会阻塞连接池
-    dev_code = auth_service.send_login_code(email, code)
-    response = {"message": "验证码已发送"}
-    if dev_code:
-        response["dev_code"] = dev_code
-    return response
 
+def run() -> None:
+    import uvicorn
+    from pathlib import Path
 
-@app.post("/v1/auth/verify-code", response_model=AuthVerifyCodeResponse)
-def verify_login_code(body: AuthVerifyCodeRequest, request: Request, db: Session = Depends(get_db)):
-    user = auth_service.verify_login_code(db, body.email, body.code, client_ip=_get_real_ip(request))
-    if not user:
-        raise HTTPException(status_code=400, detail="验证码错误或已过期")
-    access_token = auth_service.create_access_token(user)
-    return AuthVerifyCodeResponse(access_token=access_token, user=user)
-
-
-@app.get("/v1/auth/me", response_model=UserResponse)
-def get_me(current_user: UserDB = Depends(_require_web_user)):
-    return current_user
-
-
-@app.get("/v1/config", response_model=UserRuntimeConfigResponse)
-def get_runtime_config(
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_web_user),
-):
-    """获取当前用户运行时配置。"""
-    return _config_response_for_user(current_user, db)
-
-
-@app.patch("/v1/config")
-def update_runtime_config(
-    updates: UserRuntimeConfigUpdateRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_web_user),
-):
-    """更新当前用户运行时配置，下次分析时生效。"""
-    normalized_wecom_webhook = None
-    if updates.wecom_webhook_url:
-        from api.services.wecom_notification_service import normalize_webhook_url
-
-        try:
-            normalized_wecom_webhook = normalize_webhook_url(updates.wecom_webhook_url)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    persistent_user = db.query(UserDB).filter(UserDB.id == current_user.id).first() or current_user
-    before_cfg = _config_response_for_user(persistent_user, db)
-    pending_cfg = _build_pending_runtime_config(updates, persistent_user.id, db)
-    if _should_probe_runtime_config(before_cfg, pending_cfg, updates):
-        probe = _probe_runtime_config(pending_cfg)
-        _log(
-            f"[LLM Probe] user={persistent_user.id} provider={pending_cfg.get('llm_provider')} "
-            f"model={probe.get('model', '')} status={probe.get('status')}"
-        )
-    row = auth_service.upsert_user_llm_config(
-        db,
-        persistent_user.id,
-        llm_provider=updates.llm_provider,
-        deep_think_llm=updates.deep_think_llm,
-        quick_think_llm=updates.quick_think_llm,
-        backend_url=updates.backend_url,
-        max_debate_rounds=updates.max_debate_rounds,
-        max_risk_discuss_rounds=updates.max_risk_discuss_rounds,
-        api_key=updates.api_key,
-        wecom_webhook_url=normalized_wecom_webhook,
-        clear_api_key=updates.clear_api_key,
-        clear_wecom_webhook=updates.clear_wecom_webhook,
-        default_analysts=updates.default_analysts,
+    log_config = str(Path(__file__).parent / "logging_config.yaml")
+    uvicorn.run(
+        "api.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        log_config=log_config,
+        timeout_keep_alive=900,       # 15分钟，匹配分析总耗时
+        timeout_graceful_shutdown=30,
     )
-    user_pref_updated = False
-    if updates.email_report_enabled is not None:
-        persistent_user.email_report_enabled = updates.email_report_enabled
-        user_pref_updated = True
-    if updates.wecom_report_enabled is not None:
-        persistent_user.wecom_report_enabled = updates.wecom_report_enabled
-        user_pref_updated = True
-    if user_pref_updated:
-        db.commit()
-    current_cfg = _config_response_for_user(persistent_user, db)
-    warmup_models = _warmup_model_names(current_cfg.model_dump())
-    should_warmup = _should_trigger_config_warmup(before_cfg, current_cfg, updates)
-    warmup_payload: Dict[str, Any]
-    if should_warmup and warmup_models:
-        warmup_payload = {
-            "requested": True,
-            "triggered": True,
-            "status": "scheduled",
-            "models": warmup_models,
-            "message": f"模型配置已保存，后台正在预热 {len(warmup_models)} 个模型。",
-        }
-        background_tasks.add_task(
-            _run_config_warmup,
-            _build_runtime_config({}, user_id=persistent_user.id, db=db),
-            persistent_user.id,
-        )
-    elif updates.warmup:
-        warmup_payload = {
-            "requested": True,
-            "triggered": False,
-            "status": "skipped",
-            "models": warmup_models,
-            "message": "模型配置已保存，本次未触发 warmup。",
-        }
-    else:
-        warmup_payload = {
-            "requested": False,
-            "triggered": False,
-            "status": "disabled",
-            "models": [],
-            "message": "模型配置已保存。",
-        }
-    filtered = {
-        k: v
-        for k, v in updates.model_dump().items()
-        if v is not None
-        and k not in {"api_key", "wecom_webhook_url", "warmup", "force_warmup"}
-        and (
-            k in _CONFIG_ALLOWED_KEYS
-            or k in _CONFIG_PREFERENCE_KEYS
-            or (k in {"clear_api_key", "clear_wecom_webhook"} and bool(v))
-        )
-    }
-    return {
-        "message": "用户配置已更新",
-        "applied": filtered,
-        "has_api_key": bool(row.api_key_encrypted),
-        "current": current_cfg,
-        "warmup": warmup_payload,
-    }
 
 
-@app.post("/v1/config/warmup", response_model=UserRuntimeWarmupResponse)
-def warmup_runtime_config(
-    request: UserRuntimeWarmupRequest,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_web_user),
-):
-    pending_cfg = _build_pending_runtime_config(request, current_user.id, db)
-    prompt = (request.prompt or "").strip() or "你好"
-    results = _invoke_runtime_warmup(pending_cfg, prompt, current_user.id)
-    return {
-        "prompt": prompt,
-        "results": results,
-    }
+class BacktestRequest(BaseModel):
+    symbol: str
+    start_date: str
+    end_date: str
+    selected_analysts: List[str] = ["market", "news", "fundamentals", "sentiment"]
+    hold_days: int = 5
+    sample_interval: int = 7
+    config_overrides: Optional[Dict[str, Any]] = None
 
 
-@app.post("/v1/config/wecom/warmup", response_model=WecomWebhookWarmupResponse)
-async def warmup_wecom_webhook(
-    request: WecomWebhookWarmupRequest,
-    db: Session = Depends(get_db),
-    current_user: UserDB = Depends(_require_web_user),
-):
-    from api.services.wecom_notification_service import build_test_message, normalize_webhook_url, send_message
 
-    webhook_url = (request.wecom_webhook_url or "").strip()
-    if not webhook_url:
-        user_cfg = auth_service.get_user_llm_config(db, current_user.id)
-        webhook_url = auth_service.decrypt_secret(getattr(user_cfg, "wecom_webhook_encrypted", None)) or ""
-    if not webhook_url:
-        raise HTTPException(status_code=400, detail="请先填写或保存企业微信 Webhook")
-    try:
-        webhook_url = normalize_webhook_url(webhook_url)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    try:
-        sent = await asyncio.to_thread(send_message, build_test_message(request.content), webhook_url)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Webhook 测试发送失败：{exc}") from exc
-    if not sent:
-        raise HTTPException(status_code=400, detail="Webhook 测试发送失败，请检查地址或机器人状态")
-
-    return {
-        "sent": True,
-        "message": "Webhook 测试发送成功",
-        "webhook_display": _mask_wecom_webhook(webhook_url),
-    }
+class SponsorItem(BaseModel):
+    id: str
+    sponsor_type: str
+    name: str
+    github: Optional[str] = None
+    avatar: Optional[str] = None
+    email: Optional[str] = None
+    provider: Optional[str] = None
+    date: str
+    # NOTE: amount is intentionally excluded from the public API
 
 
-# ── Stock Search ──────────────────────────────────────────────────────────────
+class SponsorsResponse(BaseModel):
+    money: List[SponsorItem]
+    token: List[SponsorItem]
 
-@app.get("/v1/market/stock-search")
-def search_stocks(
-    q: str = Query("", min_length=1, max_length=20),
-    current_user: UserDB = Depends(_require_api_user),
-):
-    """Search stocks by code prefix or name substring."""
-    q = q.strip()
-    if not q:
-        return {"results": []}
 
-    name_to_code = _load_cn_stock_map()
-    code_to_name = _get_reverse_stock_map()
-    results = []
-    q_upper = q.upper()
+def _sponsor_to_item(s: SponsorDB) -> SponsorItem:
+    return SponsorItem(
+        id=s.id,
+        sponsor_type=s.sponsor_type,
+        name=s.name,
+        github=s.github,
+        avatar=s.avatar,
+        email=s.email,
+        provider=s.provider,
+        date=s.date,
+    )
 
-    for code, name in code_to_name.items():
-        if code.upper().startswith(q_upper) or code.split(".")[0].startswith(q):
-            results.append({"symbol": code, "name": name})
-            if len(results) >= 20:
-                break
 
-    if len(results) < 20:
-        for name, code in name_to_code.items():
-            if q in name and not any(r["symbol"] == code for r in results):
-                results.append({"symbol": code, "name": name})
-                if len(results) >= 20:
-                    break
 
-    return {"results": results}
+class FeedbackCreateRequest(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=200)
+    content: str = Field(..., min_length=1, max_length=5000)
+
+
+class FeedbackItem(BaseModel):
+    id: str
+    user_email: str
+    subject: str
+    content: str
+    admin_reply: Optional[str] = None
+    replied_at: Optional[datetime] = None
+    is_read: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    @field_serializer("replied_at", "created_at", "updated_at")
+    def serialize_dt(self, v: Optional[datetime], _info: Any) -> Optional[str]:
+        return v.isoformat() if v else None
+
+
+class FeedbackListResponse(BaseModel):
+    total: int
+    feedbacks: List[FeedbackItem]
+
+
+class FeedbackUnreadResponse(BaseModel):
+    unread_count: int
+
+
+def _fb_to_item(fb: FeedbackDB) -> FeedbackItem:
+    return FeedbackItem(
+        id=fb.id,
+        user_email=fb.user_email,
+        subject=fb.subject,
+        content=fb.content,
+        admin_reply=fb.admin_reply,
+        replied_at=fb.replied_at,
+        is_read=fb.is_read,
+        created_at=fb.created_at,
+        updated_at=fb.updated_at,
+    )
+
+
+
+
+def _require_job_owner(job_id: str, current_user: UserDB) -> Dict[str, Any]:
+    job = _get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    owner_id = job.get("user_id")
+    if owner_id and owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+
+def _normalize_ths_code(code: str) -> str:
+    """Convert THS/XQ code like SH601xxx → 601xxx.SH"""
+    code = str(code).strip()
+    if code.upper().startswith("SH"):
+        return f"{code[2:]}.SH"
+    if code.upper().startswith("SZ"):
+        return f"{code[2:]}.SZ"
+    if code.upper().startswith("BJ") or code.upper().startswith("NQ"):
+        return f"{code[2:]}.BJ"
+    # Bare 6-digit code — guess exchange
+    if code.startswith(("6", "5")):
+        return f"{code}.SH"
+    if code.startswith(("0", "3", "2")):
+        return f"{code}.SZ"
+    return code
 
 
 def _annotate_scheduled_with_imported_context(items: List[dict], db: Session, user_id: str) -> List[dict]:
@@ -4070,242 +3229,6 @@ def _attach_stock_names(items: List[dict], code_to_name: Dict[str, str]) -> List
     return items
 
 
-@app.get("/v1/portfolio/imports")
-def get_portfolio_import_state(
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    return portfolio_import_service.get_import_state(db, current_user.id)
-
-
-@app.post("/v1/portfolio/imports")
-def sync_portfolio_import(
-    body: PortfolioImportSyncRequest,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    try:
-        return portfolio_import_service.sync_positions(
-            db=db,
-            user_id=current_user.id,
-            positions=[p.model_dump() for p in body.positions],
-            source=body.source,
-            auto_apply_scheduled=body.auto_apply_scheduled,
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-
-@app.delete("/v1/portfolio/imports", status_code=204)
-def clear_portfolio_import_state(
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    portfolio_import_service.clear_imported_portfolio(db, current_user.id)
-
-
-@app.post("/v1/portfolio/parse-image")
-async def parse_position_image_endpoint(
-    file: UploadFile = File(...),
-    current_user: UserDB = Depends(_require_api_user),
-):
-    """Parse a broker position screenshot using server-side VLM."""
-    from api.services.vlm_position_parser import parse_position_image
-
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(400, "只支持图片文件")
-
-    image_bytes = await file.read()
-    if len(image_bytes) > 10 * 1024 * 1024:
-        raise HTTPException(400, "图片不能超过 10MB")
-
-    try:
-        positions = await asyncio.to_thread(parse_position_image, image_bytes, file.content_type)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except Exception as exc:
-        logger.warning("[parse-image] VLM parsing failed: %s", exc)
-        raise HTTPException(500, "图片解析失败，请稍后重试") from exc
-
-    return {"positions": positions}
-
-
-@app.get("/v1/dashboard/tracking-board")
-def get_dashboard_tracking_board(
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    return tracking_board_service.get_tracking_board(db, current_user.id)
-
-
-# ── Watchlist ─────────────────────────────────────────────────────────────────
-
-@app.get("/v1/watchlist")
-def list_watchlist(
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    items = watchlist_service.list_watchlist(db, current_user.id)
-    _attach_stock_names(items, _get_reverse_stock_map())
-    return {"items": items}
-
-
-@app.post("/v1/watchlist")
-def add_to_watchlist(
-    body: WatchlistAddRequest,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    text = str(body.text or body.symbol or "").strip()
-    if not text:
-        raise HTTPException(400, "text or symbol is required")
-
-    tokens = _split_watchlist_batch_text(text)
-    if not tokens:
-        raise HTTPException(400, "至少提供一个股票代码或名称")
-
-    name_to_code = _load_cn_stock_map()
-    code_to_name = _get_reverse_stock_map()
-
-    resolved_entries: List[Dict[str, Any]] = []
-    results: List[Dict[str, Any]] = []
-    for idx, token in enumerate(tokens):
-        symbol, name, error = _resolve_watchlist_identifier(token, name_to_code, code_to_name)
-        if error:
-            results.append({
-                "_order": idx,
-                "input": token,
-                "status": "invalid",
-                "message": error,
-            })
-            continue
-        resolved_entries.append({
-            "_order": idx,
-            "input": token,
-            "symbol": symbol,
-            "name": name,
-        })
-
-    add_results = watchlist_service.add_watchlist_items(
-        db,
-        current_user.id,
-        [entry["symbol"] for entry in resolved_entries],
-    )
-    for entry, result in zip(resolved_entries, add_results):
-        item = result.get("item")
-        if item:
-            item["name"] = entry["name"]
-            item["has_scheduled"] = False
-        results.append({
-            "_order": entry["_order"],
-            "input": entry["input"],
-            "symbol": entry["symbol"],
-            "name": entry["name"],
-            "status": result["status"],
-            "message": result["message"],
-            "item": item,
-        })
-
-    results.sort(key=lambda row: row["_order"])
-    for row in results:
-        row.pop("_order", None)
-    summary = {
-        "total": len(tokens),
-        "added": sum(1 for row in results if row["status"] == "added"),
-        "duplicate": sum(1 for row in results if row["status"] == "duplicate"),
-        "failed": sum(1 for row in results if row["status"] in {"invalid", "failed"}),
-    }
-    message_parts = [f"共处理 {summary['total']} 项"]
-    if summary["added"]:
-        message_parts.append(f"新增 {summary['added']} 项")
-    if summary["duplicate"]:
-        message_parts.append(f"重复 {summary['duplicate']} 项")
-    if summary["failed"]:
-        message_parts.append(f"失败 {summary['failed']} 项")
-    return {
-        "message": "，".join(message_parts),
-        "summary": summary,
-        "results": results,
-    }
-
-
-@app.delete("/v1/watchlist/{item_id}", status_code=204)
-def delete_from_watchlist(
-    item_id: str,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    if not watchlist_service.delete_watchlist_item(db, current_user.id, item_id):
-        raise HTTPException(404, "未找到该自选股")
-
-
-# ── Scheduled Analysis ────────────────────────────────────────────────────────
-
-@app.get("/v1/scheduled")
-def list_scheduled_analyses(
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    items = scheduled_service.list_scheduled(db, current_user.id)
-    _attach_stock_names(items, _get_reverse_stock_map_cached_only())
-    return {"items": _annotate_scheduled_with_imported_context(items, db, current_user.id)}
-
-
-@app.get("/v1/portfolio/overview", response_model=PortfolioOverviewResponse)
-def get_portfolio_overview(
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    code_to_name = _get_reverse_stock_map_cached_only()
-
-    watchlist_items = watchlist_service.list_watchlist(db, current_user.id)
-    _attach_stock_names(watchlist_items, code_to_name)
-
-    scheduled_items = scheduled_service.list_scheduled(db, current_user.id)
-    _attach_stock_names(scheduled_items, code_to_name)
-    scheduled_items = _annotate_scheduled_with_imported_context(scheduled_items, db, current_user.id)
-
-    latest_reports = report_service.get_latest_reports_by_symbols(
-        db=db,
-        user_id=current_user.id,
-        symbols=[item["symbol"] for item in watchlist_items],
-    )
-    for report in latest_reports:
-        report.name = code_to_name.get(report.symbol, report.symbol)
-
-    portfolio_import = portfolio_import_service.get_import_state(db, current_user.id)
-
-    return {
-        "watchlist": watchlist_items,
-        "scheduled": scheduled_items,
-        "latest_reports": latest_reports,
-        "portfolio_import": portfolio_import,
-    }
-
-
-@app.post("/v1/scheduled", status_code=201)
-def create_scheduled_analysis(
-    body: dict,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    symbol = body.get("symbol", "").strip().upper()
-    horizon = body.get("horizon", "short")
-    trigger_time = body.get("trigger_time", "20:00")
-    if not symbol:
-        raise HTTPException(400, "symbol is required")
-    code_to_name = _get_reverse_stock_map()
-    if symbol not in code_to_name:
-        raise HTTPException(400, f"未知的股票代码: {symbol}")
-    try:
-        item = scheduled_service.create_scheduled(db, current_user.id, symbol, horizon, trigger_time)
-        item["name"] = code_to_name.get(symbol, symbol)
-        _annotate_scheduled_with_imported_context([item], db, current_user.id)
-        return item
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
 def _extract_scheduled_update_kwargs(body: dict) -> dict:
     kwargs = {}
     if "is_active" in body:
@@ -4317,556 +3240,39 @@ def _extract_scheduled_update_kwargs(body: dict) -> dict:
     return kwargs
 
 
-@app.patch("/v1/scheduled/batch")
-def batch_update_scheduled_analyses(
-    body: ScheduledBatchUpdateRequest,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    kwargs = _extract_scheduled_update_kwargs(body.model_dump(exclude_unset=True))
-    if not kwargs:
-        raise HTTPException(400, "至少提供一个更新字段")
-    try:
-        items = scheduled_service.batch_update_scheduled(
-            db,
-            current_user.id,
-            body.item_ids,
-            **kwargs,
-        )
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    code_to_name = _get_reverse_stock_map()
-    for item in items:
-        item["name"] = code_to_name.get(item["symbol"], item["symbol"])
-    return {"items": _annotate_scheduled_with_imported_context(items, db, current_user.id)}
 
+# ─── Register routers ───────────────────────────────────────────────────────
+
+from api.routers import (
+    analyze_router,
+    auth_router,
+    chip_deep_router,
+    config_router,
+    dashboard_router,
+    feedback_router,
+    jobs_router,
+    market_router,
+    misc_router,
+    mount_static_files,
+    portfolio_router,
+    reports_router,
+    scheduled_router,
+    watchlist_router,
+)
+
+app.include_router(auth_router)
+app.include_router(config_router)
+app.include_router(market_router)
+app.include_router(analyze_router)
+app.include_router(jobs_router)
+app.include_router(reports_router)
+app.include_router(portfolio_router)
+app.include_router(watchlist_router)
+app.include_router(scheduled_router)
+app.include_router(dashboard_router)
+app.include_router(feedback_router)
+app.include_router(chip_deep_router)
+app.include_router(misc_router)
+
+mount_static_files(app)
 
-@app.post("/v1/scheduled/batch/delete")
-def batch_delete_scheduled_analyses(
-    body: ScheduledBatchIdsRequest,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    try:
-        return scheduled_service.batch_delete_scheduled(db, current_user.id, body.item_ids)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
-@app.post("/v1/scheduled/batch/trigger", response_model=BatchScheduledTriggerResponse)
-async def trigger_scheduled_analyses_batch(
-    body: ScheduledBatchIdsRequest,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    if not body.item_ids:
-        raise HTTPException(400, "请至少选择 1 个定时任务")
-
-    requested_trade_date = cn_today_str()
-    actual_trade_date = _resolve_scheduled_trade_date(requested_trade_date)
-    code_to_name = _get_reverse_stock_map()
-    jobs: List[Dict[str, Any]] = []
-    with_position_context = 0
-    available_tasks = {
-        task["id"]: task
-        for task in scheduled_service.list_scheduled(db, current_user.id)
-    }
-    valid_item_ids = []
-    missing_item_ids = []
-    for raw_item_id in body.item_ids:
-        item_id = str(raw_item_id or "").strip()
-        if not item_id:
-            continue
-        if item_id in available_tasks:
-            valid_item_ids.append(item_id)
-        else:
-            missing_item_ids.append(item_id)
-
-    if not valid_item_ids:
-        raise HTTPException(400, "选中的定时任务已失效，请刷新页面后重试")
-
-    if missing_item_ids:
-        _log(
-            f"[Scheduled Batch Trigger] user={current_user.id} skipped missing item_ids={missing_item_ids}"
-        )
-
-    for item_id in valid_item_ids:
-        task = available_tasks[item_id]
-
-        task_snapshot = dict(task)
-        task_snapshot["user_id"] = current_user.id
-        task_snapshot["manual_user_context"] = _build_manual_imported_user_context(db, current_user.id, task["symbol"])
-
-        scheduled_user_context = task_snapshot["manual_user_context"]
-        if scheduled_user_context.get("current_position") is not None:
-            with_position_context += 1
-
-        now = _utcnow_iso()
-        job_id = uuid4().hex
-        _set_job(
-            job_id,
-            job_id=job_id,
-            status="pending",
-            created_at=now,
-            symbol=task["symbol"],
-            trade_date=actual_trade_date,
-            user_id=current_user.id,
-            request_source="scheduled_manual_batch",
-        )
-        _emit_job_event(
-            job_id,
-            "job.queued",
-            {"job_id": job_id, "symbol": task["symbol"], "trade_date": actual_trade_date},
-        )
-        _create_tracked_task(
-            _run_manual_trigger(
-                task_snapshot,
-                requested_trade_date,
-                job_id,
-            )
-        )
-
-        jobs.append({
-            "item_id": task["id"],
-            "job_id": job_id,
-            "symbol": task["symbol"],
-            "name": code_to_name.get(task["symbol"], task["symbol"]),
-            "status": "pending",
-            "created_at": now,
-            "current_position": scheduled_user_context.get("current_position"),
-            "average_cost": scheduled_user_context.get("average_cost"),
-        })
-
-    return {
-        "summary": {
-            "total": len(jobs),
-            "with_position_context": with_position_context,
-        },
-        "jobs": jobs,
-    }
-
-
-@app.post("/v1/scheduled/{item_id}/trigger", response_model=AnalyzeResponse)
-async def trigger_scheduled_analysis_once(
-    item_id: str,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    task = scheduled_service.get_scheduled(db, current_user.id, item_id)
-    if task is None:
-        raise HTTPException(404, "未找到该定时任务")
-
-    requested_trade_date = cn_today_str()
-    actual_trade_date = _resolve_scheduled_trade_date(requested_trade_date)
-    now = _utcnow_iso()
-    job_id = uuid4().hex
-
-    task_snapshot = dict(task)
-    task_snapshot["user_id"] = current_user.id
-    task_snapshot["manual_user_context"] = _build_manual_imported_user_context(db, current_user.id, task["symbol"])
-
-    _set_job(
-        job_id,
-        job_id=job_id,
-        status="pending",
-        created_at=now,
-        symbol=task["symbol"],
-        trade_date=actual_trade_date,
-        user_id=current_user.id,
-        request_source="scheduled_manual",
-    )
-    _emit_job_event(
-        job_id,
-        "job.queued",
-        {"job_id": job_id, "symbol": task["symbol"], "trade_date": actual_trade_date},
-    )
-    _create_tracked_task(
-        _run_manual_trigger(
-            task_snapshot,
-            requested_trade_date,
-            job_id,
-        )
-    )
-    return AnalyzeResponse(job_id=job_id, status="pending", created_at=now)
-
-
-@app.patch("/v1/scheduled/{item_id}")
-def update_scheduled_analysis(
-    item_id: str,
-    body: dict,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    kwargs = _extract_scheduled_update_kwargs(body)
-    try:
-        result = scheduled_service.update_scheduled(db, current_user.id, item_id, **kwargs)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    if result is None:
-        raise HTTPException(404, "未找到该定时任务")
-    code_to_name = _get_reverse_stock_map()
-    result["name"] = code_to_name.get(result["symbol"], result["symbol"])
-    _annotate_scheduled_with_imported_context([result], db, current_user.id)
-    return result
-
-
-@app.delete("/v1/scheduled/{item_id}", status_code=204)
-def delete_scheduled_analysis(
-    item_id: str,
-    current_user: UserDB = Depends(_require_api_user),
-    db: Session = Depends(get_db),
-):
-    if not scheduled_service.delete_scheduled(db, current_user.id, item_id):
-        raise HTTPException(404, "未找到该定时任务")
-
-
-# ─── Sponsor endpoints (public, no auth) ────────────────────────────────────
-
-
-class SponsorItem(BaseModel):
-    id: str
-    sponsor_type: str
-    name: str
-    github: Optional[str] = None
-    avatar: Optional[str] = None
-    email: Optional[str] = None
-    provider: Optional[str] = None
-    date: str
-    # NOTE: amount is intentionally excluded from the public API
-
-
-class SponsorsResponse(BaseModel):
-    money: List[SponsorItem]
-    token: List[SponsorItem]
-
-
-def _sponsor_to_item(s: SponsorDB) -> SponsorItem:
-    return SponsorItem(
-        id=s.id,
-        sponsor_type=s.sponsor_type,
-        name=s.name,
-        github=s.github,
-        avatar=s.avatar,
-        email=s.email,
-        provider=s.provider,
-        date=s.date,
-    )
-
-
-@app.get("/v1/sponsors", response_model=SponsorsResponse)
-def list_sponsors(db: Session = Depends(get_db)):
-    """Public endpoint: list all visible sponsors grouped by type."""
-    all_sponsors = sponsor_service.list_sponsors(db)
-    money = [_sponsor_to_item(s) for s in all_sponsors if s.sponsor_type == "money"]
-    token = [_sponsor_to_item(s) for s in all_sponsors if s.sponsor_type == "token"]
-    return SponsorsResponse(money=money, token=token)
-
-
-# ─── Feedback endpoints ─────────────────────────────────────────────────────
-
-
-class FeedbackCreateRequest(BaseModel):
-    subject: str = Field(..., min_length=1, max_length=200)
-    content: str = Field(..., min_length=1, max_length=5000)
-
-
-class FeedbackItem(BaseModel):
-    id: str
-    user_email: str
-    subject: str
-    content: str
-    admin_reply: Optional[str] = None
-    replied_at: Optional[datetime] = None
-    is_read: bool = False
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-    @field_serializer("replied_at", "created_at", "updated_at")
-    def serialize_dt(self, v: Optional[datetime], _info: Any) -> Optional[str]:
-        return v.isoformat() if v else None
-
-
-class FeedbackListResponse(BaseModel):
-    total: int
-    feedbacks: List[FeedbackItem]
-
-
-class FeedbackUnreadResponse(BaseModel):
-    unread_count: int
-
-
-def _fb_to_item(fb: FeedbackDB) -> FeedbackItem:
-    return FeedbackItem(
-        id=fb.id,
-        user_email=fb.user_email,
-        subject=fb.subject,
-        content=fb.content,
-        admin_reply=fb.admin_reply,
-        replied_at=fb.replied_at,
-        is_read=fb.is_read,
-        created_at=fb.created_at,
-        updated_at=fb.updated_at,
-    )
-
-
-@app.post("/v1/feedbacks", response_model=FeedbackItem, status_code=201)
-def create_feedback(
-    req: FeedbackCreateRequest,
-    current_user: UserDB = Depends(_require_web_user),
-    db: Session = Depends(get_db),
-):
-    fb = feedback_service.create_feedback(db, current_user, req.subject, req.content)
-    return _fb_to_item(fb)
-
-
-@app.get("/v1/feedbacks", response_model=FeedbackListResponse)
-def list_feedbacks(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    current_user: UserDB = Depends(_require_web_user),
-    db: Session = Depends(get_db),
-):
-    items, total = feedback_service.list_feedbacks(db, current_user.id, page, page_size)
-    return FeedbackListResponse(total=total, feedbacks=[_fb_to_item(fb) for fb in items])
-
-
-@app.get("/v1/feedbacks/unread-count", response_model=FeedbackUnreadResponse)
-def feedback_unread_count(
-    current_user: UserDB = Depends(_require_web_user),
-    db: Session = Depends(get_db),
-):
-    count = feedback_service.unread_count(db, current_user.id)
-    return FeedbackUnreadResponse(unread_count=count)
-
-
-@app.get("/v1/feedbacks/{feedback_id}", response_model=FeedbackItem)
-def get_feedback(
-    feedback_id: str,
-    current_user: UserDB = Depends(_require_web_user),
-    db: Session = Depends(get_db),
-):
-    fb = feedback_service.get_feedback(db, feedback_id)
-    if not fb or fb.user_id != current_user.id:
-        raise HTTPException(404, "未找到该反馈")
-    # auto mark read
-    if not fb.is_read and fb.admin_reply:
-        feedback_service.mark_read(db, feedback_id, current_user.id)
-        fb.is_read = True
-    return _fb_to_item(fb)
-
-
-@app.post("/v1/feedbacks/{feedback_id}/read")
-def mark_feedback_read(
-    feedback_id: str,
-    current_user: UserDB = Depends(_require_web_user),
-    db: Session = Depends(get_db),
-):
-    fb = feedback_service.mark_read(db, feedback_id, current_user.id)
-    if not fb:
-        raise HTTPException(404, "未找到该反馈")
-    return {"ok": True}
-
-
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-
-# ─── Chip-Deep Endpoints ─────────────────────────────────────────────────────
-
-from tradingagents.chip_deep import ChipDeepAnalyzer, ChipDeepResult
-
-# 别名映射表（PRD v2.0 定义）
-_CHIP_DEEP_ALIASES = {
-    "茅台": "600519.SH", "贵州茅台": "600519.SH",
-    "招行": "600036.SH", "招商银行": "600036.SH",
-    "平安": "601318.SH", "中国平安": "601318.SH",
-    "神华": "601088.SH", "中国神华": "601088.SH",
-    "重汽": "000951.SZ", "中国重汽": "000951.SZ",
-    "宁王": "300750.SZ", "宁德时代": "300750.SZ",
-    "迪王": "002594.SZ", "比亚迪": "002594.SZ",
-}
-
-# stock_basic 缓存（名称 → ts_code），会话内缓存已解析的结果
-_stock_name_cache: dict[str, str] = {}
-
-
-def _resolve_stock_name_to_code(name_or_symbol: str) -> str:
-    """将股票名称或代码解析为标准的 ts_code 格式。
-    
-    支持输入：
-    - 纯数字代码：如 "000951" → "000951.SZ"
-    - 标准代码：如 "000951.SZ" 或 "600519.SH"
-    - 股票名称：如 "华工科技" → 查询 stock_basic 返回 "000988.SZ"
-    - 别名：如 "茅台" → "600519.SH"
-    """
-    s = name_or_symbol.strip()
-    
-    # 1. 已是标准格式（含 .）
-    if "." in s:
-        return s.upper()
-    
-    # 2. 纯数字代码，自动补全后缀
-    if s.isdigit() and len(s) in (6,):
-        code = s.upper()
-        if code.startswith("6"):
-            return f"{code}.SH"
-        elif code.startswith("0") or code.startswith("3"):
-            return f"{code}.SZ"
-        elif code.startswith("8") or code.startswith("4"):
-            return f"{code}.BJ"
-    
-    # 3. 别名匹配
-    alias_result = _CHIP_DEEP_ALIASES.get(s)
-    if alias_result:
-        return alias_result
-    
-    # 4. 名称查询：每次从Tushare拉取，避免缓存过期
-    # 先查会话内已解析的缓存
-    if s in _stock_name_cache:
-        return _stock_name_cache[s]
-    
-    # 从Tushare拉取stock_basic
-    try:
-        import tushare as ts
-        token = os.getenv("TUSHARE_TOKEN", "")
-        if token:
-            ts.set_token(token)
-            api = ts.pro_api()
-            df = api.stock_basic(fields="ts_code,name")
-            if df is not None and not df.empty:
-                # 精确匹配
-                match = df[df["name"] == s]
-                if not match.empty:
-                    code = str(match.iloc[0]["ts_code"])
-                    _stock_name_cache[s] = code
-                    return code
-                # 模糊匹配（包含）
-                match = df[df["name"].str.contains(s, na=False)]
-                if not match.empty:
-                    code = str(match.iloc[0]["ts_code"])
-                    _stock_name_cache[s] = code
-                    return code
-    except Exception as e:
-        print(f"[chip-deep] 股票名称解析失败: {e}")
-    
-    # 5. 如果都不是，返回原始输入（让后续逻辑处理）
-    return s.upper()
-
-
-@app.get("/v1/chip-deep/analyze", response_model=ChipDeepResult)
-async def chip_deep_analyze(
-    symbol: str = Query(..., description="股票代码或名称，如 000951.SZ 或 中国重汽"),
-    lookback_days: int = Query(30, ge=30, le=500, description="回溯天数"),
-    current_user: Optional[UserDB] = Depends(_optional_user),
-):
-    """筹码深度分析主接口
-    
-    输入股票代码或名称，返回筹码分布、六维评分、综合评级等完整分析结果。
-    """
-    # 统一解析：支持代码、名称、别名
-    symbol = _resolve_stock_name_to_code(symbol)
-    print(f"[chip-deep] 解析后的代码: {symbol}")
-    
-    analyzer = ChipDeepAnalyzer(symbol, lookback_days)
-    result = await analyzer.analyze()
-    return result
-
-
-@app.get("/v1/chip-deep/search")
-async def chip_deep_search(
-    q: str = Query(..., min_length=1, max_length=20, description="搜索关键词"),
-):
-    """智能搜索（支持别名、名称、代码模糊匹配）"""
-    q = q.strip()
-    results = []
-    
-    # 1. 别名匹配
-    for alias, code in _CHIP_DEEP_ALIASES.items():
-        if q in alias or alias in q:
-            results.append({
-                "ts_code": code,
-                "name": alias,
-                "match_type": "alias",
-            })
-    
-    # 2. stock_basic 名称匹配（每次从Tushare拉取）
-    try:
-        import tushare as ts
-        token = os.getenv("TUSHARE_TOKEN", "")
-        if token:
-            ts.set_token(token)
-            api = ts.pro_api()
-            df = api.stock_basic(fields="ts_code,name")
-            if df is not None and not df.empty:
-                # 名称包含关键词
-                match = df[df["name"].str.contains(q, na=False)]
-                for _, row in match.head(10).iterrows():
-                    code = str(row["ts_code"])
-                    name = str(row["name"])
-                    # 避免与别名重复
-                    if not any(r["ts_code"] == code for r in results):
-                        results.append({
-                            "ts_code": code,
-                            "name": name,
-                            "match_type": "name",
-                        })
-    except Exception as e:
-        print(f"[chip-deep] 股票搜索失败: {e}")
-    
-    # 去重
-    seen = set()
-    unique = []
-    for r in results:
-        if r["ts_code"] not in seen:
-            seen.add(r["ts_code"])
-            unique.append(r)
-    
-    return {"code": 0, "data": unique}
-
-
-# ─── Static Files & SPA Routing ──────────────────────────────────────────────
-
-# Serve uploaded files (avatars etc.) from shared uploads directory
-_uploads_dir = Path(os.getenv("UPLOAD_DIR", str(Path(__file__).parent.parent / "uploads")))
-if _uploads_dir.is_dir():
-    app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
-
-# Mount frontend if dist exists
-dist_path = os.path.join(os.getcwd(), "frontend/dist")
-if os.path.exists(dist_path):
-    app.mount("/assets", StaticFiles(directory=os.path.join(dist_path, "assets")), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        # 1. Define and resolve the absolute safe root
-        base_path = os.path.realpath(dist_path)
-        
-        # 2. Resolve the requested path (handling .. and symlinks)
-        # We lstrip("/") to prevent os.path.join from treating it as an absolute path
-        fullpath = os.path.realpath(os.path.join(base_path, full_path.lstrip("/")))
-        
-        # 3. Security Check: The normalized path must start with the base_path
-        if not fullpath.startswith(base_path):
-            return FileResponse(os.path.join(base_path, "index.html"))
-            
-        # 4. Final check: if it's a valid file, serve it
-        if os.path.isfile(fullpath):
-            return FileResponse(fullpath)
-            
-        # Otherwise fallback to index.html for SPA routing
-        return FileResponse(os.path.join(base_path, "index.html"))
-
-
-def run() -> None:
-    import uvicorn
-    from pathlib import Path
-
-    log_config = str(Path(__file__).parent / "logging_config.yaml")
-    uvicorn.run(
-        "api.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,
-        log_config=log_config,
-        timeout_keep_alive=900,       # 15分钟，匹配分析总耗时
-        timeout_graceful_shutdown=30,
-    )

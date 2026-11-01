@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [v0.5.0] - 2026-03-22
 
+### Engineering
+- 统一项目版本号至 `0.5.0`。
+- 启用 GitHub Actions CI：接入 `ruff`、`pytest`、前端 `eslint` 与 `tsc`。
+- 归档根目录调试脚本至 `scripts/debug/`。
+- 将生产环境特定地址外置到环境变量。
+
 ### Added
 - **Token 级流式输出**：全部 15 个 Agent 支持 astream Token 推送，对话框实时展示 LLM 输出过程。
 - **自选股管理**：数据库持久化的自选列表（上限 50），支持股票代码/名称模糊搜索。

@@ -78,7 +78,7 @@ from api.services import (
 )
 
 # Thin wrappers & job runner from the API module
-from api.main import (
+from api.services.job_service import (
     _build_imported_user_context,
     _build_scheduled_analyze_request,
     _resolve_scheduled_trade_date,

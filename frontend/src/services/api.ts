@@ -7,7 +7,8 @@ export function getBaseUrl(): string {
     if (typeof window !== 'undefined' && window.location?.origin) {
         return window.location.origin.replace(/\/$/, '')
     }
-    return 'http://localhost:8000'
+    // 非浏览器环境（如 SSR/测试）应通过 VITE_API_URL 显式指定后端地址
+    return envUrl
 }
 
 

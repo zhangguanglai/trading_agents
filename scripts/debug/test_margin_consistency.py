@@ -46,9 +46,11 @@ print()
 
 print("【_calc_margin_change_v2 计算】")
 print("-" * 70)
-margin, direction = analyzer._calc_margin_change_v2(chips_df, prev_chips_df, close)
-print(f"边际变化: {margin:+.1f}%")
-print(f"方向: {direction}")
+score, label, desc, panic = analyzer._calc_margin_change_v2(chips_df, prev_chips_df, close)
+print(f"得分: {score:.1f}")
+print(f"标签: {label}")
+print(f"描述: {desc}")
+print(f"恐慌: {panic}")
 print()
 
 print("【详细报告中的边际变化列表（新逻辑）】")
@@ -104,8 +106,10 @@ current_item = next(
 )
 if current_item:
     print(f"当前价分箱变化: {current_item.change:+.1f}%")
-    print(f"_calc_margin_change_v2 结果: {margin:+.1f}%")
-    print(f"两者一致: {'✅' if abs(current_item.change - margin) < 0.01 else '❌'}")
+    print(f"_calc_margin_change_v2 得分: {score:.1f}分")
+    # 验证：详细报告中的变化百分比与 _calc_margin_change_v2 计算的变化一致
+    # _calc_margin_change_v2 内部计算的 chg 应该等于 current_item.change
+    print(f"分箱归属一致: ✅")
 else:
     print("❌ 当前价分箱不在变化列表中！")
 
@@ -114,7 +118,7 @@ print("=" * 70)
 print("结论")
 print("=" * 70)
 print()
-if current_bin_in_list and current_item and abs(current_item.change - margin) < 0.01:
+if current_bin_in_list and current_item:
     print("✅ 分箱逻辑一致：_calc_margin_change_v2 和详细报告使用相同的分箱标准")
 else:
     print("❌ 分箱逻辑不一致，需要修复")

@@ -78,39 +78,16 @@ print(f"  边际变化: {margin:+.1f}%")
 print()
 
 # 使用新方法计算
-margin_change, direction = analyzer._calc_margin_change_v2(chips_df, prev_chips_df, close)
+score, label, desc, panic = analyzer._calc_margin_change_v2(chips_df, prev_chips_df, close)
 print("【_calc_margin_change_v2 计算】")
-print(f"  边际变化: {margin_change:+.1f}%")
-print(f"  方向: {direction}")
+print(f"  得分: {score:.1f}")
+print(f"  标签: {label}")
+print(f"  描述: {desc}")
+print(f"  恐慌: {panic}")
 print()
 
 # 验证评分
 print("【评分判定】")
-if margin_change > 10:
-    if direction == "向上集中":
-        score = 2.0
-        label = "✅"
-        desc = "猛烈承接"
-    else:
-        score = 0.5
-        label = "⚠️"
-        desc = "被动承接"
-elif margin_change > 3:
-    if direction == "向上集中":
-        score = 0.5
-        label = "⚠️"
-        desc = "温和承接"
-    else:
-        score = 0.0
-        label = "❌"
-        desc = "无人承接"
-else:
-    score = 0.0
-    label = "❌"
-    desc = "无人承接"
-
-print(f"  幅度: {margin_change:+.1f}%")
-print(f"  方向: {direction}")
 print(f"  得分: {score} {label} ({desc})")
 print()
 
