@@ -1,6 +1,7 @@
 """chip-deep 核心分析引擎"""
 
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -18,6 +19,8 @@ from .models import (
     PriceStage,
     CoreInsight,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ChipDeepAnalyzer:
@@ -51,22 +54,22 @@ class ChipDeepAnalyzer:
         # 切片：只保留最近 lookback_days 个交易日的数据用于分析
         if len(perf_df) > self.lookback_days:
             perf_df = perf_df.tail(self.lookback_days).reset_index(drop=True)
-            print(f"[chip-deep] perf_df 切片: 保留最近 {self.lookback_days} 个交易日")
+            logger.info(f"[chip-deep] perf_df 切片: 保留最近 {self.lookback_days} 个交易日")
 
         # 2. 获取最新交易日（优先使用 daily 接口的最新日期，确保数据一致性）
         latest_date_raw = perf_df["trade_date"].max()
         latest_date = str(latest_date_raw).replace("-", "")
-        print(f"[chip-deep] perf_df 最新日期: {latest_date} (原始: {latest_date_raw}, 类型: {type(latest_date_raw)})")
+        logger.info(f"[chip-deep] perf_df 最新日期: {latest_date} (原始: {latest_date_raw}, 类型: {type(latest_date_raw)})")
         
         # 尝试获取 daily 数据的最新日期（可能比 cyq_perf 更新）
         daily_latest_date = await self._get_daily_latest_date()
         if daily_latest_date and daily_latest_date > latest_date:
             latest_date = daily_latest_date
-            print(f"[chip-deep] 使用 daily 接口的最新日期: {latest_date}")
+            logger.info(f"[chip-deep] 使用 daily 接口的最新日期: {latest_date}")
 
         # 3. 获取最新日期的筹码分布 (cyq_chips)
         # 向前查找直到找到有数据的日期（处理Tushare数据延迟/周末节假日无数据）
-        print(f"[chip-deep] 请求筹码分布: symbol={self.symbol}, date={latest_date}")
+        logger.info(f"[chip-deep] 请求筹码分布: symbol={self.symbol}, date={latest_date}")
         chips_df = None
         valid_date = None
         # 从最新日期开始向前查找，最多尝试10个交易日
@@ -75,19 +78,19 @@ class ChipDeepAnalyzer:
             if valid_date is None and candidate_date <= latest_date:
                 # 第一次尝试：用原始日期
                 if idx == len(perf_df) - 1:
-                    print(f"[chip-deep] 尝试获取筹码分布: date={candidate_date}")
+                    logger.info(f"[chip-deep] 尝试获取筹码分布: date={candidate_date}")
                     chips_df = await self._get_cyq_chips(candidate_date)
                     if chips_df is not None and not chips_df.empty:
                         valid_date = candidate_date
-                        print(f"[chip-deep] 筹码分布获取成功: date={valid_date}")
+                        logger.info(f"[chip-deep] 筹码分布获取成功: date={valid_date}")
                         break
                 else:
                     # 后续尝试：用perf_df中的日期
-                    print(f"[chip-deep] 向前查找筹码分布: date={candidate_date}")
+                    logger.info(f"[chip-deep] 向前查找筹码分布: date={candidate_date}")
                     chips_df = await self._get_cyq_chips(candidate_date)
                     if chips_df is not None and not chips_df.empty:
                         valid_date = candidate_date
-                        print(f"[chip-deep] 筹码分布获取成功: date={valid_date}")
+                        logger.info(f"[chip-deep] 筹码分布获取成功: date={valid_date}")
                         break
         
         if chips_df is None or chips_df.empty:
@@ -95,7 +98,7 @@ class ChipDeepAnalyzer:
         
         # 更新latest_date为实际有数据的日期
         if valid_date and valid_date != latest_date:
-            print(f"[chip-deep] 使用有效日期替代: {valid_date} (原: {latest_date})")
+            logger.info(f"[chip-deep] 使用有效日期替代: {valid_date} (原: {latest_date})")
             latest_date = valid_date
 
         # 4. 获取周期起点筹码分布（边际变化）
@@ -133,7 +136,7 @@ class ChipDeepAnalyzer:
             if df is not None and not df.empty:
                 return str(df.iloc[0].get("name", ""))
         except Exception as e:
-            print(f"[chip-deep] get_stock_name error: {e}")
+            logger.warning(f"[chip-deep] get_stock_name error: {e}")
         return ""
 
     async def _get_cyq_perf(self) -> Optional[pd.DataFrame]:
@@ -195,7 +198,7 @@ class ChipDeepAnalyzer:
                 set_cached(self.symbol, cache_key, "daily_data", result)
                 return result
         except Exception as e:
-            print(f"[chip-deep] _get_daily_data error: {e}")
+            logger.warning(f"[chip-deep] _get_daily_data error: {e}")
         return None
 
     async def _get_cyq_chips(self, trade_date: str) -> Optional[pd.DataFrame]:
@@ -206,25 +209,25 @@ class ChipDeepAnalyzer:
             return cached
 
         try:
-            print(f"[chip-deep] 请求 cyq_chips: symbol={self.symbol}, trade_date={trade_date}")
+            logger.info(f"[chip-deep] 请求 cyq_chips: symbol={self.symbol}, trade_date={trade_date}")
             result = route_to_vendor(
                 "get_cyq_chips",
                 symbol=self.symbol,
                 trade_date=trade_date,
             )
-            print(f"[chip-deep] cyq_chips 结果: {type(result)}, {result}")
+            logger.info(f"[chip-deep] cyq_chips 结果: {type(result)}, {result}")
             if result is None:
-                print(f"[chip-deep] cyq_chips 返回 None")
+                logger.info("[chip-deep] cyq_chips 返回 None")
                 return None
             df = result if isinstance(result, pd.DataFrame) else None
             if df is not None:
                 set_cached(self.symbol, trade_date, "cyq_chips", df)
-                print(f"[chip-deep] cyq_chips 数据: {len(df)} 行, 列: {df.columns.tolist()}")
+                logger.info(f"[chip-deep] cyq_chips 数据: {len(df)} 行, 列: {df.columns.tolist()}")
             else:
-                print(f"[chip-deep] cyq_chips 结果不是 DataFrame")
+                logger.info("[chip-deep] cyq_chips 结果不是 DataFrame")
             return df
         except Exception as e:
-            print(f"[chip-deep] cyq_chips 异常: {e}")
+            logger.warning(f"[chip-deep] cyq_chips 异常: {e}")
             return None
 
     async def _get_close_price(self, trade_date: str) -> float:
@@ -239,25 +242,25 @@ class ChipDeepAnalyzer:
             else:
                 formatted_date = trade_date
             result = provider.get_stock_data(self.symbol, formatted_date, formatted_date)
-            print(f"[chip-deep] tushare daily result for {self.symbol} on {formatted_date}: {result}")
+            logger.info(f"[chip-deep] tushare daily result for {self.symbol} on {formatted_date}: {result}")
             if result is None:
                 return 0
             import json
             if isinstance(result, str):
                 try:
                     data = json.loads(result)
-                    print(f"[chip-deep] parsed JSON data: {data}")
+                    logger.info(f"[chip-deep] parsed JSON data: {data}")
                     if isinstance(data, list) and len(data) > 0:
                         return float(data[0].get("close", 0))
                     elif isinstance(data, dict) and "error" not in data and "close" in data:
                         return float(data.get("close", 0))
                 except json.JSONDecodeError:
-                    print(f"[chip-deep] result is not JSON: {result}")
+                    logger.info(f"[chip-deep] result is not JSON: {result}")
                     return 0
             elif isinstance(result, pd.DataFrame) and not result.empty:
                 return float(result.iloc[0].get("close", 0))
         except Exception as e:
-            print(f"[chip-deep] get_close_price error: {e}")
+            logger.warning(f"[chip-deep] get_close_price error: {e}")
         return 0
 
     async def _get_daily_latest_date(self) -> Optional[str]:
@@ -292,7 +295,7 @@ class ChipDeepAnalyzer:
                     if latest_date:
                         return str(latest_date).replace("-", "")
         except Exception as e:
-            print(f"[chip-deep] get_daily_latest_date error: {e}")
+            logger.warning(f"[chip-deep] get_daily_latest_date error: {e}")
         return None
 
     def _get_prev_trade_date(self, perf_df: pd.DataFrame, latest_date: str, days: int = 14) -> Optional[str]:
@@ -993,7 +996,7 @@ class ChipDeepAnalyzer:
             start_dt = dt.strptime(str(start_date), "%Y%m%d")
             end_dt = dt.strptime(str(end_date), "%Y%m%d")
             period_days = (end_dt - start_dt).days
-        except:
+        except (ValueError, TypeError):
             period_days = len(df_sorted)
         
         # 成本抬升幅度

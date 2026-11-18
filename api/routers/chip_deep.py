@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,6 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api.database import UserDB
 from api.dependencies import _optional_user
 from tradingagents.chip_deep import ChipDeepAnalyzer, ChipDeepResult
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chip-deep"])
 
@@ -86,7 +89,7 @@ def _resolve_stock_name_to_code(name_or_symbol: str) -> str:
                     _stock_name_cache[s] = code
                     return code
     except Exception as e:
-        print(f"[chip-deep] 股票名称解析失败: {e}")
+        logger.warning(f"[chip-deep] 股票名称解析失败: {e}")
     
     # 5. 如果都不是，返回原始输入（让后续逻辑处理）
     return s.upper()
@@ -104,7 +107,7 @@ async def chip_deep_analyze(
     """
     # 统一解析：支持代码、名称、别名
     symbol = _resolve_stock_name_to_code(symbol)
-    print(f"[chip-deep] 解析后的代码: {symbol}")
+    logger.info(f"[chip-deep] 解析后的代码: {symbol}")
     
     analyzer = ChipDeepAnalyzer(symbol, lookback_days)
     result = await analyzer.analyze()
@@ -150,7 +153,7 @@ async def chip_deep_search(
                             "match_type": "name",
                         })
     except Exception as e:
-        print(f"[chip-deep] 股票搜索失败: {e}")
+        logger.warning(f"[chip-deep] 股票搜索失败: {e}")
     
     # 去重
     seen = set()

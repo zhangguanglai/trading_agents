@@ -8,6 +8,7 @@ import json
 from datetime import date
 from typing import Dict, Any, Tuple, List, Optional
 import sqlite3
+import logging
 
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
@@ -46,6 +47,8 @@ from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
+
+logger = logging.getLogger(__name__)
 
 
 class TradingAgentsGraph:
@@ -326,7 +329,7 @@ class TradingAgentsGraph:
             }
 
         # Pre-collect data once (always full data); analysts will read from cache
-        print(f"[TradingAgentsGraph] Collecting data for {ticker} {trade_date}…")
+        logger.info(f"[TradingAgentsGraph] Collecting data for {ticker} {trade_date}…")
         self.data_collector.collect(ticker, trade_date)
 
         graph_args = self.propagator.get_graph_args()

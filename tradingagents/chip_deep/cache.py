@@ -1,10 +1,13 @@
 """chip-deep 分级缓存模块"""
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path("./dataflows/data_cache/chip_deep")
 
@@ -33,5 +36,5 @@ def set_cached(symbol: str, date: str, data_type: str, df: pd.DataFrame) -> None
         cache_file = CACHE_DIR / f"{key}.parquet"
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(cache_file)
-    except Exception:
-        pass  # 缓存失败不影响主流程
+    except Exception as e:
+        logger.debug(f"cache write failed for {symbol}:{date}:{data_type}: {e}")

@@ -4,6 +4,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+import logging
 import threading
 import time
 import pandas as pd
@@ -26,6 +27,8 @@ from tradingagents.agents.utils.agent_utils import (
     get_zt_pool,
     get_hot_stocks_xq,
 )
+
+logger = logging.getLogger(__name__)
 
 INDICATORS = [
     "close_50_sma", "close_200_sma", "close_10_ema",
@@ -248,10 +251,10 @@ def _safe(tool, payload: dict) -> Any:
         res = tool.invoke(payload)
         duration = time.time() - start_t
         if duration > 0.5:
-            print(f"  [Timer] {getattr(tool, 'name', str(tool))} took {duration:.2f}s")
+            logger.debug(f"  [Timer] {getattr(tool, 'name', str(tool))} took {duration:.2f}s")
         return res
     except Exception as exc:
-        print(f"  [FetchFailed] {getattr(tool, 'name', str(tool))}: {type(exc).__name__}: {exc}")
+        logger.warning(f"  [FetchFailed] {getattr(tool, 'name', str(tool))}: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -330,9 +333,9 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
                 except Exception:
                     indicators_res[key] = "N/A"
         else:
-            print(f"  [Warning] No valid stock_data for indicator calculation.")
+            logger.warning("  [Warning] No valid stock_data for indicator calculation.")
     except Exception as e:
-        print(f"  [Error] Local indicator calculation failed: {e}")
+        logger.error(f"  [Error] Local indicator calculation failed: {e}")
 
     for ind in INDICATORS:
         if ind not in indicators_res:
@@ -349,7 +352,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     except Exception as e:
         results["vpa_indicators"] = f"VPA 计算失败：{e}"
 
-    print(f"[Timer] Total Data Collection for {ticker} took {time.time() - fetch_start:.2f}s")
+    logger.info(f"[Timer] Total Data Collection for {ticker} took {time.time() - fetch_start:.2f}s")
     return results
 
 

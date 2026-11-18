@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from tradingagents.dataflows.config import get_config
@@ -6,19 +7,21 @@ from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
 
+logger = logging.getLogger(__name__)
+
 
 def create_macro_analyst(llm, data_collector=None):
     async def _safe(tool, payload):
         try:
             return await asyncio.to_thread(tool.invoke, payload)
         except Exception as exc:
-            print(f"[Macro._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
+            logger.warning(f"[Macro._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
             return None
 
     async def macro_analyst_node(state):
         current_date = state["trade_date"]
         ticker = state["company_of_interest"]
-        print(f"[Macro Analyst] START {ticker} {current_date}")
+        logger.info(f"[Macro Analyst] START {ticker} {current_date}")
         horizon = "medium"  # 宏观面固定中长期视角
         user_intent = state.get("user_intent") or {}
         focus_areas = user_intent.get("focus_areas", [])
@@ -71,7 +74,7 @@ def create_macro_analyst(llm, data_collector=None):
             if tracker:
                 tracker._emit_token("Macro Analyst", "macro_report", content)
 
-        print(f"[Macro Analyst] DONE {ticker}, report length={len(full_content)}")
+        logger.info(f"[Macro Analyst] DONE {ticker}, report length={len(full_content)}")
         verdict, confidence = extract_verdict(full_content)
         return {
             "macro_report": full_content,

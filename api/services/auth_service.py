@@ -14,8 +14,11 @@ from cryptography.fernet import Fernet, InvalidToken
 import jwt
 from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy.orm import Session
+import logging
 
 from api.database import EmailVerificationCodeDB, UserDB, UserLLMConfigDB
+
+logger = logging.getLogger(__name__)
 
 
 ALGORITHM = "HS256"
@@ -195,7 +198,7 @@ def get_env_alias(keys: list[str], default: str = "") -> str:
 def send_login_code(email: str, code: str) -> Optional[str]:
     smtp_host = get_env_alias(["MAIL_HOST", "MAIL_SERVER", "SMTP_HOST"]).strip()
     if not smtp_host:
-        print(f"[auth] login code for {email}: {code}")
+        logger.debug(f"[auth] login code for {email}: {code}")
         # 无论开发环境还是生产环境，只要没有配置 SMTP，都返回验证码到前端
         # 生产环境用户需要在 Railway 环境变量中配置 SMTP，否则验证码会显示在日志中
         return code
@@ -219,7 +222,7 @@ def send_login_code(email: str, code: str) -> Optional[str]:
     msg.set_content(f"你的 TradingAgents 登录验证码是：{code}\n\n10 分钟内有效。")
 
     try:
-        print(f"[auth] connecting to {smtp_host}:{smtp_port} (SSL: {smtp_ssl_tls}, STARTTLS: {smtp_starttls})")
+        logger.info(f"[auth] connecting to {smtp_host}:{smtp_port} (SSL: {smtp_ssl_tls}, STARTTLS: {smtp_starttls})")
         smtp_cls = smtplib.SMTP_SSL if smtp_ssl_tls else smtplib.SMTP
         with smtp_cls(smtp_host, smtp_port, timeout=20) as server:
             if smtp_starttls and not smtp_ssl_tls:
@@ -229,8 +232,8 @@ def send_login_code(email: str, code: str) -> Optional[str]:
             server.send_message(msg)
         return None
     except Exception as e:
-        print(f"[auth] failed to send email via {smtp_host}: {e}")
-        print(f"[auth] falling back to console log. code for {email}: {code}")
+        logger.warning(f"[auth] failed to send email via {smtp_host}: {e}")
+        logger.warning(f"[auth] falling back to console log. code for {email}: {code}")
         if os.getenv("APP_ENV", "development") != "production":
             return code
         return None

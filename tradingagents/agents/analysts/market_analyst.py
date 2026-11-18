@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timedelta
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -7,6 +8,8 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
+
+logger = logging.getLogger(__name__)
 
 # List of technical indicators to retrieve
 MARKET_INDICATORS = [
@@ -96,7 +99,7 @@ async def _fetch_direct(ticker, current_date, horizon):
         try:
             return await asyncio.to_thread(tool.invoke, payload)
         except Exception as exc:
-            print(f"[Market._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
+            logger.warning(f"[Market._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
             return None
 
     days = 14 if horizon == "short" else 90

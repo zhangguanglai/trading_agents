@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from tradingagents.dataflows.config import get_config
@@ -6,19 +7,21 @@ from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
 
+logger = logging.getLogger(__name__)
+
 
 def create_smart_money_analyst(llm, data_collector=None):
     async def _safe(tool, payload):
         try:
             return await asyncio.to_thread(tool.invoke, payload)
         except Exception as exc:
-            print(f"[SmartMoney._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
+            logger.warning(f"[SmartMoney._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
             return None
 
     async def smart_money_analyst_node(state):
         current_date = state["trade_date"]
         ticker = state["company_of_interest"]
-        print(f"[Smart Money Analyst] START {ticker} {current_date}")
+        logger.info(f"[Smart Money Analyst] START {ticker} {current_date}")
         horizon = "short"  # 资金面固定短期视角
         user_intent = state.get("user_intent") or {}
         focus_areas = user_intent.get("focus_areas", [])
@@ -89,7 +92,7 @@ def create_smart_money_analyst(llm, data_collector=None):
             if tracker:
                 tracker._emit_token("Smart Money Analyst", "smart_money_report", content)
 
-        print(f"[Smart Money Analyst] DONE {ticker}, report length={len(full_content)}")
+        logger.info(f"[Smart Money Analyst] DONE {ticker}, report length={len(full_content)}")
         verdict, confidence = extract_verdict(full_content)
         return {
             "smart_money_report": full_content,

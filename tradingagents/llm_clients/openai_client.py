@@ -99,7 +99,7 @@ class OpenAIClient(BaseLLMClient):
         elif self.provider == "openrouter": target_url = "https://openrouter.ai/api/v1"
         elif self.provider == "ollama": target_url = "http://localhost:11434/v1"
         
-        print(f"[LLM Client] Init {self.provider} ({self.model}) at {target_url} (Retries=0, Timeout={llm_kwargs['timeout']}s)")
+        _logger.info(f"[LLM Client] Init {self.provider} ({self.model}) at {target_url} (Retries=0, Timeout={llm_kwargs['timeout']}s)")
 
         if self.provider == "xai":
             llm_kwargs["base_url"] = "https://api.x.ai/v1"

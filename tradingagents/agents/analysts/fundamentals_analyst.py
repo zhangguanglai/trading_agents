@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from tradingagents.dataflows.config import get_config
@@ -6,13 +7,15 @@ from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
 
+logger = logging.getLogger(__name__)
+
 
 def create_fundamentals_analyst(llm, data_collector=None):
     async def _safe(tool, payload):
         try:
             return await asyncio.to_thread(tool.invoke, payload)
         except Exception as exc:
-            print(f"[Fundamentals._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
+            logger.warning(f"[Fundamentals._safe] {getattr(tool, 'name', str(tool))} failed: {type(exc).__name__}: {exc}")
             return None
 
     async def fundamentals_analyst_node(state):

@@ -1,8 +1,11 @@
 import os
+import logging
 
 from .alpha_vantage_common import AlphaVantageRateLimitError
 from .config import get_config
 from .providers import build_default_registry
+
+logger = logging.getLogger(__name__)
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
@@ -65,7 +68,7 @@ def _is_trace_enabled() -> bool:
 
 def _trace(msg: str) -> None:
     if _is_trace_enabled():
-        print(f"[provider-trace] {msg}", flush=True)
+        logger.debug(f"[provider-trace] {msg}")
 
 
 def get_category_for_method(method: str) -> str:

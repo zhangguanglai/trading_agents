@@ -1,11 +1,14 @@
 import os
 import json
 import time
+import logging
 from typing import Optional
 
 import pandas as pd
 
 from .base import BaseMarketDataProvider
+
+logger = logging.getLogger(__name__)
 
 
 class CnTushareProvider(BaseMarketDataProvider):
@@ -47,7 +50,7 @@ class CnTushareProvider(BaseMarketDataProvider):
                 if any(kw in str(exc).lower() for kw in ["connection", "timeout", "reset", "network", "socket"]):
                     if attempt < self._max_retries:
                         delay = self._retry_delay * (2 ** attempt)
-                        print(f"[Tushare] Retry {attempt + 1}/{self._max_retries} after {delay:.1f}s ({type(exc).__name__})")
+                        logger.warning(f"[Tushare] Retry {attempt + 1}/{self._max_retries} after {delay:.1f}s ({type(exc).__name__})")
                         time.sleep(delay)
                         continue
                 break
@@ -309,19 +312,19 @@ class CnTushareProvider(BaseMarketDataProvider):
         ts_code = self._to_tushare_code(symbol)
         try:
             date_clean = trade_date.replace("-", "")
-            print(f"[Tushare] get_cyq_chips: symbol={symbol}, ts_code={ts_code}, trade_date={trade_date} → {date_clean}")
+            logger.info(f"[Tushare] get_cyq_chips: symbol={symbol}, ts_code={ts_code}, trade_date={trade_date} → {date_clean}")
             df = self._call_with_retry(
                 self._ts.cyq_chips,
                 ts_code=ts_code,
                 trade_date=date_clean,
             )
             if df is not None and not df.empty:
-                print(f"[Tushare] get_cyq_chips 成功: {len(df)} 行")
+                logger.info(f"[Tushare] get_cyq_chips 成功: {len(df)} 行")
                 return df
-            print(f"[Tushare] get_cyq_chips 返回空: df={df}")
+            logger.info(f"[Tushare] get_cyq_chips 返回空: df={df}")
             return None
         except Exception as e:
-            print(f"[Tushare] get_cyq_chips 异常: {e}")
+            logger.warning(f"[Tushare] get_cyq_chips 异常: {e}")
             return None
 
     def get_hot_stocks_xq(self) -> str:
