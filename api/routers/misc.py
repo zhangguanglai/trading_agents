@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+import api.main as _api_main
 from api.database import VersionStatsDB, get_db
 from api.dependencies import _get_real_ip, _require_api_user
 from api.main import (
@@ -27,8 +30,25 @@ _VS_RATE_INTERVAL = 3600  # at most once per hour per IP
 
 
 @router.get("/healthz")
-def healthz() -> Dict[str, str]:
-    return {"status": "ok"}
+async def healthz():
+    """健康检查，同时探测 asyncio 默认线程池是否被僵尸线程占满。
+
+    向默认 executor 提交一个 no-op，5 秒内排不上队即判定饱和并返回 503
+    （生产事故：无超时的网络调用把 worker 全部占死，所有依赖 to_thread
+    的接口静默挂起，前端表现为网关超时）。
+    """
+    payload: Dict[str, Any] = {"status": "ok"}
+    executor = _api_main._default_executor
+    if executor is not None:
+        payload["executor_queued"] = executor._work_queue.qsize()
+        payload["executor_threads"] = len(executor._threads)
+    try:
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(loop.run_in_executor(None, int), timeout=5)
+    except asyncio.TimeoutError:
+        payload["status"] = "thread_pool_starved"
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 @router.post("/api/version-stats")

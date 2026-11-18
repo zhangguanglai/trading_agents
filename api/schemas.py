@@ -88,6 +88,8 @@ class JobStatusResponse(BaseModel):
     symbol: str
     trade_date: str
     error: Optional[str] = None
+    overtime: bool = False
+    overtime_at: Optional[str] = None
     waiting_ahead_count: Optional[int] = None
     scheduled_running_count: Optional[int] = None
     scheduled_concurrency_limit: Optional[int] = None

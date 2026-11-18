@@ -27,7 +27,6 @@ from api.main import (
     _utcnow_iso,
 )
 from api.services import scheduled_service
-from tradingagents.dataflows.trade_calendar import cn_today_str
 
 router = APIRouter(tags=["scheduled"])
 
@@ -110,7 +109,7 @@ async def trigger_scheduled_analyses_batch(
     if not body.item_ids:
         raise HTTPException(400, "请至少选择 1 个定时任务")
 
-    requested_trade_date = cn_today_str()
+    requested_trade_date = _main.cn_today_str()
     actual_trade_date = _main._resolve_scheduled_trade_date(requested_trade_date)
     code_to_name = _main._get_reverse_stock_map()
     jobs: List[Dict[str, Any]] = []
@@ -205,7 +204,7 @@ async def trigger_scheduled_analysis_once(
     if task is None:
         raise HTTPException(404, "未找到该定时任务")
 
-    requested_trade_date = cn_today_str()
+    requested_trade_date = _main.cn_today_str()
     actual_trade_date = _main._resolve_scheduled_trade_date(requested_trade_date)
     now = _utcnow_iso()
     job_id = uuid4().hex

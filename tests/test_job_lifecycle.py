@@ -5,7 +5,7 @@ import threading
 from unittest.mock import patch
 
 from api.job_store import InMemoryJobStore
-from api import main
+from api import job_runtime, main
 
 
 def _request() -> main.AnalyzeRequest:
@@ -38,7 +38,7 @@ def test_soft_timeout_emits_overtime_then_allows_completion():
             main._emit_job_event(job_id, "job.completed", {"job_id": job_id})
 
         with (
-            patch.object(main, "_job_store_instance", store),
+            patch.object(job_runtime, "_job_store_instance", store),
             patch.object(main, "_JOB_TIMEOUT", 0.01),
             patch.object(main, "_JOB_HARD_TIMEOUT", 1),
             patch.object(main, "_run_job_inner", side_effect=fake_inner),
@@ -73,7 +73,7 @@ def test_job_finishing_before_deadline_does_not_emit_overtime():
 
     async def scenario() -> None:
         with (
-            patch.object(main, "_job_store_instance", store),
+            patch.object(job_runtime, "_job_store_instance", store),
             patch.object(main, "_JOB_TIMEOUT", 1),
             patch.object(main, "_JOB_HARD_TIMEOUT", 2),
             patch.object(main, "_run_job_inner", side_effect=fake_inner),
@@ -102,7 +102,7 @@ def test_completed_task_is_not_overwritten_by_stale_wait_snapshot():
         # main.asyncio is the process-wide asyncio module.  This patch is
         # intentionally scoped to the context so it cannot leak to other tests.
         with (
-            patch.object(main, "_job_store_instance", store),
+            patch.object(job_runtime, "_job_store_instance", store),
             patch.object(main, "_JOB_TIMEOUT", 1),
             patch.object(main, "_JOB_HARD_TIMEOUT", 2),
             patch.object(main, "_run_job_inner", side_effect=fake_inner),
@@ -127,7 +127,7 @@ def test_zero_timeout_disables_warning_but_still_waits_for_completion():
 
     async def scenario() -> None:
         with (
-            patch.object(main, "_job_store_instance", store),
+            patch.object(job_runtime, "_job_store_instance", store),
             patch.object(main, "_JOB_TIMEOUT", 0),
             patch.object(main, "_JOB_HARD_TIMEOUT", 1),
             patch.object(main, "_run_job_inner", side_effect=fake_inner),
@@ -153,7 +153,7 @@ def test_unexpected_inner_exception_marks_job_failed():
 
     async def scenario() -> None:
         with (
-            patch.object(main, "_job_store_instance", store),
+            patch.object(job_runtime, "_job_store_instance", store),
             patch.object(main, "_JOB_TIMEOUT", 1),
             patch.object(main, "_JOB_HARD_TIMEOUT", 2),
             patch.object(main, "_run_job_inner", side_effect=failing_inner),
@@ -181,7 +181,7 @@ def test_overtime_job_that_later_raises_finishes_as_failed():
 
     async def scenario() -> None:
         with (
-            patch.object(main, "_job_store_instance", store),
+            patch.object(job_runtime, "_job_store_instance", store),
             patch.object(main, "_JOB_TIMEOUT", 0.01),
             patch.object(main, "_JOB_HARD_TIMEOUT", 1),
             patch.object(main, "_run_job_inner", side_effect=failing_inner),
@@ -211,7 +211,7 @@ def test_hard_timeout_releases_wrapper_and_ignores_late_thread_result():
 
     async def scenario() -> None:
         with (
-            patch.object(main, "_job_store_instance", store),
+            patch.object(job_runtime, "_job_store_instance", store),
             patch.object(main, "_JOB_TIMEOUT", 0.01),
             patch.object(main, "_JOB_HARD_TIMEOUT", 0.03),
             patch.object(main, "_run_job_inner", side_effect=blocked_inner),

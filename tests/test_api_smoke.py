@@ -174,6 +174,13 @@ class TestAnalyzeEndpoint:
         now = datetime.now(timezone.utc)
 
         with get_db_ctx() as db:
+            # The test user is shared across runs (fixed email), so drop any row
+            # left by a previous run before inserting the fixture position.
+            db.query(ImportedPortfolioPositionDB).filter(
+                ImportedPortfolioPositionDB.user_id == current_user["id"],
+                ImportedPortfolioPositionDB.source == "manual",
+                ImportedPortfolioPositionDB.symbol == "600519.SH",
+            ).delete(synchronize_session=False)
             db.add(
                 ImportedPortfolioPositionDB(
                     id=uuid4().hex,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -86,6 +88,7 @@ from api.job_runtime import (  # noqa: F401
     get_job_store,
     _background_tasks,
     _JOB_TIMEOUT,
+    _JOB_HARD_TIMEOUT,
     _create_tracked_task,
     _utcnow_iso,
     _set_job,
@@ -104,11 +107,14 @@ from api.job_runtime import (  # noqa: F401
 
 # Re-export analysis runner from api.analysis_runner.
 from api.analysis_runner import (  # noqa: F401
+    _ANALYSIS_ERROR_HINTS,
     _build_result_payload,
     _extract_message_text,
     _generate_tool_description,
+    _humanize_analysis_error,
     _run_job,
     _run_job_inner,
+    _save_report_or_raise,
 )
 
 # Re-export user-context / scheduled-task helpers from api.context_helpers.
@@ -132,8 +138,16 @@ from api.context_helpers import (  # noqa: F401
     _ai_extract_symbol_and_date,
 )
 
-# Alias for backward compatibility with tests / routers that patch this name.
-_run_scheduled_analysis_once = _run_manual_trigger
+# Thin wrapper rather than a bare alias: routers call the scheduling name while
+# tests patch ``_run_manual_trigger``, so resolve it through the module namespace
+# at call time. Kept sync on purpose — it returns the coroutine untouched, so a
+# patched mock is invoked immediately instead of when the coroutine is awaited.
+def _run_scheduled_analysis_once(
+    task: dict,
+    requested_trade_date: str,
+    job_id: str,
+):
+    return _run_manual_trigger(task, requested_trade_date, job_id)
 
 from api.database import SponsorDB, FeedbackDB, init_db
 from api.database import get_db_ctx  # noqa: F401  (accessed lazily as api.main.get_db_ctx)
@@ -189,6 +203,47 @@ def _report_version_stats() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize resources on startup and cleanup on shutdown."""
+    # 全局 socket 默认超时：akshare 等库内部的 requests 调用不传 timeout，
+    # 网络丢包时 TLS 握手/读会永久阻塞，僵尸线程逐渐占满线程池（见 healthz 探针）。
+    # uvicorn/asyncio 的服务端 socket 显式 setblocking(False)，不受此影响；
+    # httpx/openai SDK 自带超时配置，也不受影响。
+    socket.setdefaulttimeout(float(os.getenv("TA_SOCKET_DEFAULT_TIMEOUT", "60")))
+    _log(f"Global socket default timeout set to {socket.getdefaulttimeout()}s.")
+
+    # Raise the AnyIO thread limiter ceiling so frequent sync endpoints
+    # (tracking-board polling, /v1/jobs/{id} polling, akshare-backed market
+    # endpoints) cannot starve each other when the event loop is also running
+    # long-lived `_run_job` tasks.
+    try:
+        from anyio import to_thread as _anyio_to_thread
+
+        limiter = _anyio_to_thread.current_default_thread_limiter()
+        desired = int(os.getenv("ANYIO_THREAD_LIMIT", "120"))
+        if limiter.total_tokens < desired:
+            limiter.total_tokens = desired
+            _log(f"AnyIO thread limiter raised to {desired}.")
+    except Exception as exc:
+        _log(f"Could not raise AnyIO thread limiter: {exc}")
+
+    # Default asyncio executor is used by `asyncio.to_thread`. The CPython
+    # default is `min(32, cpu_count + 4)`, which is too small when many
+    # `_run_job_inner` coroutines fan out concurrent `to_thread` calls for DB
+    # writes, LLM extraction, and market data collection.
+    global _default_executor
+    new_default_executor: Optional[ThreadPoolExecutor] = None
+    try:
+        loop = asyncio.get_running_loop()
+        executor_workers = int(os.getenv("ASYNCIO_DEFAULT_EXECUTOR_WORKERS", "64"))
+        new_default_executor = ThreadPoolExecutor(
+            max_workers=executor_workers,
+            thread_name_prefix="ta-asyncio",
+        )
+        loop.set_default_executor(new_default_executor)
+        _default_executor = new_default_executor
+        _log(f"Default asyncio executor set to {executor_workers} workers.")
+    except Exception as exc:
+        _log(f"Could not configure default asyncio executor: {exc}")
+
     init_db()
     _log("Database initialized.")
     store = get_job_store()
@@ -213,6 +268,8 @@ async def lifespan(app: FastAPI):
     yield
     _log("Shutting down: Cleaning up resources...")
     _executor.shutdown(wait=True)
+    if new_default_executor is not None:
+        new_default_executor.shutdown(wait=False)
     _log("Executor shutdown complete.")
 
 
@@ -251,6 +308,8 @@ app.add_middleware(
 )
 
 _executor = ThreadPoolExecutor(max_workers=int(os.getenv("TA_MAX_WORKERS", "4")))
+# lifespan 中创建的 asyncio 默认 executor，healthz 探针用它报告饱和度
+_default_executor: Optional[ThreadPoolExecutor] = None
 
 
 def _log(msg: str):

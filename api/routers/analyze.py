@@ -65,6 +65,8 @@ async def analyze(
         symbol=request.symbol,
         trade_date=request.trade_date,
         error=None,
+        overtime=False,
+        overtime_at=None,
         result=None,
         decision=None,
     )
@@ -172,6 +174,8 @@ async def chat_completions(
                     symbol=analyze_req.symbol,
                     trade_date=analyze_req.trade_date,
                     error=None,
+                    overtime=False,
+                    overtime_at=None,
                     result=None,
                     decision=None,
                 )
@@ -262,6 +266,8 @@ async def chat_completions(
         symbol=analyze_req.symbol,
         trade_date=analyze_req.trade_date,
         error=None,
+        overtime=False,
+        overtime_at=None,
         result=None,
         decision=None,
     )

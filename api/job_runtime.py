@@ -36,7 +36,13 @@ def get_job_store():
 # Hold references to fire-and-forget tasks so they are not garbage collected
 _background_tasks: set = set()
 
-_JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "900"))  # seconds
+# Soft deadline for long-running analyses.  Keeps the historical
+# TA_JOB_TIMEOUT setting API-compatible, but crossing it now emits an overtime
+# notification instead of terminating the job.  TA_JOB_HARD_TIMEOUT is the
+# resource-safety backstop that releases scheduler capacity if a workflow is
+# genuinely wedged.  Set either value to 0 to disable that deadline.
+_JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "1800"))
+_JOB_HARD_TIMEOUT = int(os.getenv("TA_JOB_HARD_TIMEOUT", "7200"))
 
 
 def _create_tracked_task(coro, *, label: str = "Background task") -> asyncio.Task:
