@@ -1,5 +1,5 @@
 # Stage 1: Build Frontend (始终在原生架构运行以提速)
-FROM --platform=$BUILDPLATFORM node:25-slim AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:26-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
@@ -25,6 +25,7 @@ RUN uv sync --frozen --no-install-project --no-dev
 COPY api/ ./api/
 COPY tradingagents/ ./tradingagents/
 COPY scheduler/ ./scheduler/
+COPY docker-entrypoint.py ./docker-entrypoint.py
 
 # 安装项目本身，避免 uv run 启动时重复安装
 RUN uv sync --frozen --no-dev
@@ -48,5 +49,6 @@ ENV PYTHONPATH=/app
 # 生产环境使用 /app/data 目录存储SQLite数据库，配合Railway Volume实现持久化
 ENV DATABASE_URL=sqlite:///./data/tradingagents.db
 
-# 启动命令
-CMD ["uv", "run", "--no-sync", "tradingagents-api"]
+# 启动命令（同一容器内运行 API 服务与定时任务调度器；
+# 只跑单进程时可覆盖命令，如 uv run --no-sync tradingagents-api）
+CMD ["/app/docker-entrypoint.py"]

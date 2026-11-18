@@ -9,6 +9,13 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '@/services/api'
 import { useAnalysisStore } from '@/stores/analysisStore'
+import {
+    classifyRecoveredJobStatus,
+    DEFAULT_OVERTIME_NOTICE,
+    getJobLifecycleUpdate,
+    hasRecoveryPollingReachedLimit,
+    RECOVERY_POLL_TIMEOUT_MESSAGE,
+} from '@/utils/jobLifecycle'
 import type {
     AgentReportEvent,
     AgentSnapshotEvent,
@@ -157,6 +164,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
     const sectionToMsgIdsRef = useRef<Record<string, string[]>>({}) // section → all agent bubble msgIds
     const typingIndicatorIdRef = useRef<string | null>(null)
     const mountedRef = useRef(true)
+    const recoveryAbortRef = useRef<AbortController | null>(null)
     const messagesEndRef = useRef<HTMLDivElement>(null)
     const messagesContainerRef = useRef<HTMLDivElement>(null)
 
@@ -168,11 +176,13 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
     const {
         chatMessages,
         isAnalyzing,
+        analysisOvertimeNotice,
         setCurrentJobId,
         setCurrentSymbol,
         setIsAnalyzing,
         setIsConnected,
         setAnalysisRunState,
+        setAnalysisOvertimeNotice,
         setCurrentHorizon,
         updateAgentStatus,
         updateAgentSnapshot,
@@ -190,32 +200,50 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         reset,
     } = useAnalysisStore()
 
-    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    const sleepUntilRetry = (ms: number, signal: AbortSignal) => new Promise<boolean>(resolve => {
+        if (signal.aborted) {
+            resolve(false)
+            return
+        }
+        const timer = window.setTimeout(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve(true)
+        }, ms)
+        const onAbort = () => {
+            window.clearTimeout(timer)
+            resolve(false)
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+    })
 
-    const recoverInterruptedJob = async () => {
+    const recoverInterruptedJob = async (signal: AbortSignal) => {
         const { currentJobId } = useAnalysisStore.getState()
         if (!currentJobId) return false
+        let recoveryPollAttempts = 0
 
-        // 避免重复添加系统提示：检查最后一条消息是否已经是恢复提示
-        const state = useAnalysisStore.getState()
-        const lastMsg = state.chatMessages[state.chatMessages.length - 1]
-        const alreadyRecovering = lastMsg?.content?.includes('正在持续回查任务状态')
-        if (!alreadyRecovering) {
-            pushSystem(`⏳ 分析仍在后台运行，正在持续回查任务状态...`)
-        }
+        pushSystem(`分析流中断，正在回查任务状态：${currentJobId}`)
+        setIsConnected(false)
+        setIsAnalyzing(true)
+        setAnalysisRunState('running')
 
-        // 优化：延长轮询时间，从 8次/12秒 提升到 60次/120秒
-        // 分析通常需要 5-15 分钟，给足回查时间
-        const maxAttempts = 60
-        const pollInterval = 2000 // 2秒
+        while (!signal.aborted) {
+            if (hasRecoveryPollingReachedLimit(recoveryPollAttempts)) {
+                pushAssistant(RECOVERY_POLL_TIMEOUT_MESSAGE)
+                setCurrentHorizon(null)
+                setIsAnalyzing(false)
+                setAnalysisRunState('failed', RECOVERY_POLL_TIMEOUT_MESSAGE)
+                return true
+            }
+            recoveryPollAttempts += 1
 
-        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-            if (!mountedRef.current) return false  // 组件已卸载，停止轮询
             try {
                 const status = await api.getJobStatus(currentJobId)
+                if (signal.aborted) return false
+                const disposition = classifyRecoveredJobStatus(status.status, status.error)
 
-                if (status.status === 'completed') {
+                if (disposition === 'completed') {
                     const result = await api.getJobResult(currentJobId)
+                    if (signal.aborted) return false
                     setReport(result.result)
 
                     const symbol = result.result.symbol
@@ -241,44 +269,36 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                         // 历史报告回填失败时，至少保留主报告正文
                     }
 
+                    pendingAgentMsgIdsRef.current = new Set()
+                    forceUpdate(n => n + 1)
+                    markAgentMessagesComplete()
                     pushAssistant(
-                        `**✅ 分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.direction || '未知')}**\n\n执行动作：**${String(result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
+                        `**分析完成（已从中断连接恢复）**\n\n方向倾向：**${String(result.result.direction || '未知')}**\n\n执行动作：**${String(result.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
                     )
+                    setCurrentHorizon(null)
+                    setIsAnalyzing(false)
                     setAnalysisRunState('completed')
                     return true
                 }
 
-                if (status.status === 'failed') {
-                    pushAssistant(`❌ 分析失败：${status.error || 'unknown error'}`)
+                if (disposition === 'failed') {
+                    pushAssistant(`分析失败：${status.error || 'unknown error'}`)
+                    setCurrentHorizon(null)
+                    setIsAnalyzing(false)
                     setAnalysisRunState('failed', status.error || 'unknown error')
                     return true
                 }
 
-                // 每 15 秒给用户一次进度提示（避免重复：检查最后一条消息）
-                if (attempt > 0 && attempt % 7 === 0) {
-                    const currentState = useAnalysisStore.getState()
-                    const currentLastMsg = currentState.chatMessages[currentState.chatMessages.length - 1]
-                    const waitSec = Math.round(attempt * pollInterval / 1000)
-                    const progressText = `分析仍在进行中（已等待 ${waitSec} 秒）`
-                    if (!currentLastMsg?.content?.includes(progressText)) {
-                        pushSystem(`⏳ ${progressText}，请稍候...`)
-                    }
+                if (status.overtime || status.status === 'failed') {
+                    setAnalysisOvertimeNotice(DEFAULT_OVERTIME_NOTICE)
                 }
-            } catch (pollError) {
-                // 轮询请求本身失败，继续尝试
-                console.warn('Job status poll failed:', pollError)
+            } catch (error) {
+                if (signal.aborted) return false
+                console.warn('任务状态回查失败，将继续重试:', error)
             }
 
-            await sleep(pollInterval)
+            if (!await sleepUntilRetry(3000, signal)) return false
         }
-
-        // 120 秒后仍未完成，提示用户稍后查看（避免重复）
-        const finalState = useAnalysisStore.getState()
-        const finalLastMsg = finalState.chatMessages[finalState.chatMessages.length - 1]
-        if (!finalLastMsg?.content?.includes('稍后到「历史报告」页面查看')) {
-            pushSystem(`📝 分析任务仍在后台运行中。您可以稍后到「历史报告」页面查看完整结果。`)
-        }
-        return false
     }
 
     useEffect(() => {
@@ -289,6 +309,10 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
             behavior: 'smooth',
         })
     }, [chatMessages])
+
+    useEffect(() => () => {
+        recoveryAbortRef.current?.abort()
+    }, [])
 
     const pushAssistant = (content: string) => {
         addChatMessage({
@@ -310,9 +334,20 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
 
     const parseAndDispatch = (event: StreamEvent) => {
         const { event: eventName, data } = event
+        const lifecycleUpdate = getJobLifecycleUpdate(eventName, data)
+        if (lifecycleUpdate) {
+            setIsAnalyzing(lifecycleUpdate.isAnalyzing)
+            setAnalysisRunState(
+                lifecycleUpdate.runState,
+                eventName === 'job.failed' ? String(data.error || 'unknown error') : null,
+            )
+            setAnalysisOvertimeNotice(lifecycleUpdate.overtimeNotice)
+        }
+
         switch (eventName) {
             case 'job.ready':
                 setIsConnected(true)
+                if (data.job_id) setCurrentJobId(String(data.job_id))
                 // 把 typing indicator 换成"解析中"提示，告知用户正在识别标的
                 if (typingIndicatorIdRef.current) {
                     setMessageContent(typingIndicatorIdRef.current, '__parsing__')
@@ -338,12 +373,13 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 break
             }
             case 'job.running':
-                setIsAnalyzing(true)
-                setAnalysisRunState('running')
                 // 切换 indicator 到"分析启动"阶段
                 if (typingIndicatorIdRef.current) {
                     setMessageContent(typingIndicatorIdRef.current, '__status:analyzing__')
                 }
+                break
+            case 'job.overtime':
+                // Soft timeout: keep the stream, progress and running state intact.
                 break
             case 'agent.horizon_start': {
                 const h = String(data.horizon || '')
@@ -355,8 +391,6 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 break
             case 'job.completed': {
                 setCurrentHorizon(null)
-                setIsAnalyzing(false)
-                setAnalysisRunState('completed')
                 // 任务结束：所有 agent 消息标记为已完成（持久化到 store）
                 pendingAgentMsgIdsRef.current = new Set()
                 forceUpdate(n => n + 1)
@@ -388,9 +422,10 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 break
             }
             case 'job.failed':
+                if (classifyRecoveredJobStatus('failed', typeof data.error === 'string' ? data.error : null) === 'running') {
+                    break
+                }
                 setCurrentHorizon(null)
-                setIsAnalyzing(false)
-                setAnalysisRunState('failed', String(data.error || 'unknown error'))
                 pushAssistant(`分析失败：${String(data.error || 'unknown error')}`)
                 break
             case 'agent.status': {
@@ -600,7 +635,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         const decoder = new TextDecoder()
         let buffer = ''
         let currentEvent = 'message'
-        let receivedTerminal = false
+        let terminalReceived = false
 
         while (true) {
             const { value, done } = await reader.read()
@@ -622,8 +657,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
 
                 if (!dataLine) continue
                 if (dataLine === '[DONE]' || currentEvent === 'done') {
-                    receivedTerminal = true
-                    // 继续处理完本轮blocks中剩余的事件，避免丢失
+                    terminalReceived = true
                     continue
                 }
 
@@ -633,10 +667,16 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
 
                 try {
                     const data = JSON.parse(dataLine) as Record<string, unknown>
-                    if (currentEvent === 'job.completed' || currentEvent === 'job.failed') {
-                        receivedTerminal = true
-                    }
                     parseAndDispatch({ event: currentEvent, data })
+                    if (
+                        currentEvent === 'job.completed' ||
+                        (currentEvent === 'job.failed' && classifyRecoveredJobStatus(
+                            'failed',
+                            typeof data.error === 'string' ? data.error : null,
+                        ) === 'failed')
+                    ) {
+                        terminalReceived = true
+                    }
                 } catch {
                     console.error('SSE解析失败:', dataLine.slice(0, 120))
                 }
@@ -644,18 +684,13 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         }
 
         setIsConnected(false)
-        setIsAnalyzing(false)
-
-        // 如果流正常结束但没有收到终端事件，说明连接可能意外断开
-        if (!receivedTerminal) {
-            throw new Error('SSE stream ended unexpectedly without terminal event')
-        }
+        return terminalReceived
     }
 
     const handleSubmit = async (e: FormEvent) => {
         e.preventDefault()
         const prompt = input.trim()
-        if (!prompt || streaming) return
+        if (!prompt || streaming || isAnalyzing) return
 
         // Inject custom analysis prompt from settings if set
         const customPrompt = localStorage.getItem('ta-custom-prompt')?.trim() || ''
@@ -687,9 +722,20 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
         setIsAnalyzing(true)
         setIsConnected(false)
         setAnalysisRunState('running')
+        recoveryAbortRef.current?.abort()
+        const recoveryController = new AbortController()
+        recoveryAbortRef.current = recoveryController
 
         try {
-            await streamChat(fullPrompt)
+            const terminalReceived = await streamChat(fullPrompt)
+            if (!terminalReceived) {
+                const recovered = await recoverInterruptedJob(recoveryController.signal)
+                if (!recovered && !recoveryController.signal.aborted) {
+                    setIsAnalyzing(false)
+                    setAnalysisRunState('failed', '分析流在任务编号返回前中断')
+                    pushAssistant('请求中断：未能取得任务编号，无法继续回查任务状态。')
+                }
+            }
         } catch (error) {
             // 出错时清理 typing indicator
             if (typingIndicatorIdRef.current) {
@@ -699,20 +745,26 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                 typingIndicatorIdRef.current = null
             }
             const errorMessage = error instanceof Error ? error.message : 'unknown error'
-            const shouldRecover = /network|fetch|stream|sse|body/i.test(errorMessage)
-            if (shouldRecover) {
-                const recovered = await recoverInterruptedJob()
+            const canRecover = Boolean(useAnalysisStore.getState().currentJobId)
+            if (canRecover) {
+                const recovered = await recoverInterruptedJob(recoveryController.signal)
                 if (!recovered) {
-                    setAnalysisRunState('failed', errorMessage)
-                    pushAssistant(`请求中断：${errorMessage}\n\n后端任务可能仍在执行，请稍后到历史报告中查看结果。`)
+                    if (!recoveryController.signal.aborted) {
+                        setIsAnalyzing(false)
+                        setAnalysisRunState('failed', errorMessage)
+                        pushAssistant(`请求中断：${errorMessage}\n\n后端任务可能仍在执行，请稍后到历史报告中查看结果。`)
+                    }
                 }
             } else {
+                setIsAnalyzing(false)
                 setAnalysisRunState('failed', errorMessage)
                 pushAssistant(`请求失败：${errorMessage}`)
             }
-            setIsAnalyzing(false)
             setIsConnected(false)
         } finally {
+            if (recoveryAbortRef.current === recoveryController) {
+                recoveryAbortRef.current = null
+            }
             setStreaming(false)
         }
     }
@@ -774,6 +826,16 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                     </button>
                 ))}
             </div>
+
+            {analysisOvertimeNotice && (
+                <div
+                    role="status"
+                    className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300"
+                >
+                    <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+                    <span>{analysisOvertimeNotice}</span>
+                </div>
+            )}
 
             {/* 聊天内容 */}
             <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
@@ -985,7 +1047,7 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                     />
                     <button
                         type="submit"
-                        disabled={!input.trim() || streaming}
+                        disabled={!input.trim() || streaming || isAnalyzing}
                         className="btn-primary px-3 py-2 inline-flex items-center gap-1"
                     >
                         <Send className="w-4 h-4" />
