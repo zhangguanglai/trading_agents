@@ -1,4 +1,5 @@
 """IntentParser: parse natural language query into structured trading intent."""
+
 from __future__ import annotations
 
 import json
@@ -32,18 +33,20 @@ def parse_intent(
     fallback_user_context = _extract_user_context_fallback(query)
 
     try:
-        result = llm.invoke([
-            SystemMessage(content=system_msg),
-            HumanMessage(content=query),
-        ])
+        result = llm.invoke(
+            [
+                SystemMessage(content=system_msg),
+                HumanMessage(content=query),
+            ]
+        )
         raw = result.content.strip()
         # Clean markdown code fences more robustly (handle potential whitespace/newlines)
         raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
         raw = re.sub(r"\s*```$", "", raw, flags=re.MULTILINE)
-        
+
         # Simple cleanup for common LLM JSON errors
         raw = re.sub(r",\s*([\]}])", r"\1", raw)
-        
+
         parsed = json.loads(raw) or {}
         parsed_user_context = normalize_user_context(parsed.get("user_context") or {})
         return {
@@ -51,7 +54,9 @@ def parse_intent(
             "ticker": parsed.get("ticker") or fallback_ticker or "",
             "horizons": ["short"],  # 固定单次运行，每个分析师用自己的自然时间窗口
             "focus_areas": parsed.get("focus_areas") if isinstance(parsed.get("focus_areas"), list) else [],
-            "specific_questions": parsed.get("specific_questions") if isinstance(parsed.get("specific_questions"), list) else [],
+            "specific_questions": parsed.get("specific_questions")
+            if isinstance(parsed.get("specific_questions"), list)
+            else [],
             "user_context": _merge_inferred_user_context(parsed_user_context, fallback_user_context),
         }
     except Exception:

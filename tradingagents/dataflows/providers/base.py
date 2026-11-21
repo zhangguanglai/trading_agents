@@ -15,9 +15,7 @@ class BaseMarketDataProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_indicators(
-        self, symbol: str, indicator: str, curr_date: str, look_back_days: int
-    ) -> str:
+    def get_indicators(self, symbol: str, indicator: str, curr_date: str, look_back_days: int) -> str:
         raise NotImplementedError
 
     @abstractmethod
@@ -25,21 +23,15 @@ class BaseMarketDataProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_balance_sheet(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_balance_sheet(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         raise NotImplementedError
 
     @abstractmethod
-    def get_cashflow(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_cashflow(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         raise NotImplementedError
 
     @abstractmethod
-    def get_income_statement(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_income_statement(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         raise NotImplementedError
 
     @abstractmethod
@@ -47,9 +39,7 @@ class BaseMarketDataProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_global_news(
-        self, curr_date: str, look_back_days: int = 7, limit: int = 50
-    ) -> str:
+    def get_global_news(self, curr_date: str, look_back_days: int = 7, limit: int = 50) -> str:
         raise NotImplementedError
 
     @abstractmethod

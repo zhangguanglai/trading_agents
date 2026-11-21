@@ -14,6 +14,7 @@ exits non-zero without starting anything.
 To run only one process without env vars, override the container command:
     docker run ... <image> uv run --no-sync tradingagents-api
 """
+
 from __future__ import annotations
 
 import os
@@ -75,11 +76,7 @@ def supervise(commands: Sequence[Sequence[str]]) -> int:
 
 
 def _enabled_entrypoints() -> list[str]:
-    return [
-        name
-        for name, disable_env in _ENTRYPOINTS
-        if os.getenv(disable_env, "").strip().lower() not in _TRUTHY
-    ]
+    return [name for name, disable_env in _ENTRYPOINTS if os.getenv(disable_env, "").strip().lower() not in _TRUTHY]
 
 
 def main() -> int:

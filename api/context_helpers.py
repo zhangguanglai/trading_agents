@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 # ── Scheduled-task helpers ───────────────────────────────────────────────────
 
+
 def _resolve_scheduled_trade_date(trade_date: str) -> str:
     """Use the requested trading day, or fall back to the latest CN trading day."""
     from tradingagents.dataflows.trade_calendar import is_cn_trading_day, previous_cn_trading_day
@@ -97,9 +98,7 @@ async def _run_manual_trigger(
     horizon = task.get("horizon") or "short"
 
     actual_trade_date = _resolve_scheduled_trade_date(requested_trade_date)
-    logger.info(
-        f"[Manual Trigger] {symbol} trade_date={actual_trade_date} (requested={requested_trade_date})"
-    )
+    logger.info(f"[Manual Trigger] {symbol} trade_date={actual_trade_date} (requested={requested_trade_date})")
 
     try:
         with _main.get_db_ctx() as db:
@@ -182,6 +181,7 @@ def _extract_scheduled_update_kwargs(body: dict) -> dict:
 
 # ── User-context helpers ─────────────────────────────────────────────────────
 
+
 # All analysts always run — each uses its own natural time window
 # (technical/funds → short, fundamentals/macro → medium)
 def _get_horizon_analysts(horizon: str, available: List[str]) -> List[str]:
@@ -240,6 +240,7 @@ def _apply_user_context_to_request(request: "AnalyzeRequest", user_context: Dict
 
 
 # ── Chat text / symbol extraction ────────────────────────────────────────────
+
 
 def _extract_chat_text(messages: List[ChatMessage]) -> str:
     if not messages:
@@ -334,15 +335,19 @@ async def _ai_extract_symbol_and_date_streaming(
                     token = chunk.content if hasattr(chunk, "content") else str(chunk)
                     full_content += token
                     if token:
-                        _emit_job_event(job_id, "agent.token", {
-                            "agent": "意图解析",
-                            "report": "stock_extract",
-                            "token": token,
-                        })
+                        _emit_job_event(
+                            job_id,
+                            "agent.token",
+                            {
+                                "agent": "意图解析",
+                                "report": "stock_extract",
+                                "token": token,
+                            },
+                        )
 
             await asyncio.wait_for(_stream_extract(), timeout=60.0)
         except asyncio.TimeoutError:
-            logger.info(f"[StockExtract] LLM streaming timed out after 60s")
+            logger.info("[StockExtract] LLM streaming timed out after 60s")
         except Exception as e:
             logger.info(f"[StockExtract streaming] LLM failed: {e}")
 
@@ -364,7 +369,11 @@ async def _ai_extract_symbol_and_date_streaming(
 
     logger.info(f"[StockExtract] extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
     # Support A-share 6-digit, HK stocks (e.g. 0700.HK), and US tickers (e.g. AAPL)
-    if re.match(r"^\d{6}$", llm_name) or re.match(r"^\d{4,5}\.HK$", llm_name, re.IGNORECASE) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
+    if (
+        re.match(r"^\d{6}$", llm_name)
+        or re.match(r"^\d{4,5}\.HK$", llm_name, re.IGNORECASE)
+        or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name)
+    ):
         symbol = _normalize_symbol(llm_name)
         return symbol or None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
@@ -433,8 +442,10 @@ def _ai_extract_symbol_and_date(
         llm = client.get_llm()
 
         # 调试日志：打印请求参数
-        target_url = getattr(llm, 'openai_api_base', 'default')
-        logger.info(f"[LLM Debug] Requesting StockExtract with model: {getattr(llm, 'model_name', 'unknown')} at {target_url}")
+        target_url = getattr(llm, "openai_api_base", "default")
+        logger.info(
+            f"[LLM Debug] Requesting StockExtract with model: {getattr(llm, 'model_name', 'unknown')} at {target_url}"
+        )
         logger.info(f"[LLM Debug] Prompt: {prompt[:500]}...")
 
         response = llm.invoke(prompt)
@@ -463,7 +474,11 @@ def _ai_extract_symbol_and_date(
 
     # ── Step 2: If looks like a direct code (digits / letters), normalize it ──
     # Support A-share 6-digit, HK stocks (e.g. 0700.HK), and US tickers (e.g. AAPL)
-    if re.match(r"^\d{6}$", llm_name) or re.match(r"^\d{4,5}\.HK$", llm_name, re.IGNORECASE) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
+    if (
+        re.match(r"^\d{6}$", llm_name)
+        or re.match(r"^\d{4,5}\.HK$", llm_name, re.IGNORECASE)
+        or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name)
+    ):
         symbol = _normalize_symbol(llm_name)
         logger.info(f"[StockExtract] Direct code: {symbol}")
         return symbol or None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context

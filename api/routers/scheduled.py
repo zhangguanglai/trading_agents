@@ -19,7 +19,6 @@ from api.main import (
     _annotate_scheduled_with_imported_context,
     _attach_stock_names,
     _build_manual_imported_user_context,
-    _build_scheduled_analyze_request,
     _emit_job_event,
     _extract_scheduled_update_kwargs,
     _get_reverse_stock_map_cached_only,
@@ -114,10 +113,7 @@ async def trigger_scheduled_analyses_batch(
     code_to_name = _main._get_reverse_stock_map()
     jobs: List[Dict[str, Any]] = []
     with_position_context = 0
-    available_tasks = {
-        task["id"]: task
-        for task in scheduled_service.list_scheduled(db, current_user.id)
-    }
+    available_tasks = {task["id"]: task for task in scheduled_service.list_scheduled(db, current_user.id)}
     valid_item_ids = []
     missing_item_ids = []
     for raw_item_id in body.item_ids:
@@ -134,9 +130,8 @@ async def trigger_scheduled_analyses_batch(
 
     if missing_item_ids:
         from api.main import _log
-        _log(
-            f"[Scheduled Batch Trigger] user={current_user.id} skipped missing item_ids={missing_item_ids}"
-        )
+
+        _log(f"[Scheduled Batch Trigger] user={current_user.id} skipped missing item_ids={missing_item_ids}")
 
     for item_id in valid_item_ids:
         task = available_tasks[item_id]
@@ -174,16 +169,18 @@ async def trigger_scheduled_analyses_batch(
             )
         )
 
-        jobs.append({
-            "item_id": task["id"],
-            "job_id": job_id,
-            "symbol": task["symbol"],
-            "name": code_to_name.get(task["symbol"], task["symbol"]),
-            "status": "pending",
-            "created_at": now,
-            "current_position": scheduled_user_context.get("current_position"),
-            "average_cost": scheduled_user_context.get("average_cost"),
-        })
+        jobs.append(
+            {
+                "item_id": task["id"],
+                "job_id": job_id,
+                "symbol": task["symbol"],
+                "name": code_to_name.get(task["symbol"], task["symbol"]),
+                "status": "pending",
+                "created_at": now,
+                "current_position": scheduled_user_context.get("current_position"),
+                "average_cost": scheduled_user_context.get("average_cost"),
+            }
+        )
 
     return {
         "summary": {

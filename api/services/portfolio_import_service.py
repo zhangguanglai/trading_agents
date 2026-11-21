@@ -4,6 +4,7 @@ Manages imported holdings from any source. Positions are stored as snapshots
 in ``ImportedPortfolioPositionDB`` with a configurable ``source`` tag.
 No dependency on any specific broker SDK.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,6 +28,7 @@ _CODE_RE = re.compile(r"^(\d{6})\.(SH|SZ|BJ)$")
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def sync_positions(
     db: Session,
@@ -58,15 +60,17 @@ def sync_positions(
         if symbol in seen:
             continue
         seen.add(symbol)
-        cleaned.append({
-            "symbol": symbol,
-            "name": (raw.get("name") or "").strip() or None,
-            "current_position": _to_float(raw.get("current_position")),
-            "available_position": _to_float(raw.get("available_position")),
-            "average_cost": _to_float(raw.get("average_cost")),
-            "market_value": _to_float(raw.get("market_value")),
-            "current_position_pct": _to_float(raw.get("current_position_pct")),
-        })
+        cleaned.append(
+            {
+                "symbol": symbol,
+                "name": (raw.get("name") or "").strip() or None,
+                "current_position": _to_float(raw.get("current_position")),
+                "available_position": _to_float(raw.get("available_position")),
+                "average_cost": _to_float(raw.get("average_cost")),
+                "market_value": _to_float(raw.get("market_value")),
+                "current_position_pct": _to_float(raw.get("current_position_pct")),
+            }
+        )
 
     # Compute position_pct if not provided but market_value is available
     total_mv = sum(p["market_value"] or 0 for p in cleaned if (p["market_value"] or 0) > 0)
@@ -85,23 +89,25 @@ def sync_positions(
     ).delete()
 
     for p in cleaned:
-        db.add(ImportedPortfolioPositionDB(
-            id=uuid4().hex,
-            user_id=user_id,
-            source=source,
-            symbol=p["symbol"],
-            security_name=p["name"],
-            current_position=p["current_position"],
-            available_position=p["available_position"],
-            average_cost=p["average_cost"],
-            market_value=p["market_value"],
-            current_position_pct=p["current_position_pct"],
-            trade_points_json=[],
-            trade_points_count=0,
-            latest_trade_at=None,
-            latest_trade_action=None,
-            last_imported_at=now,
-        ))
+        db.add(
+            ImportedPortfolioPositionDB(
+                id=uuid4().hex,
+                user_id=user_id,
+                source=source,
+                symbol=p["symbol"],
+                security_name=p["name"],
+                current_position=p["current_position"],
+                available_position=p["available_position"],
+                average_cost=p["average_cost"],
+                market_value=p["market_value"],
+                current_position_pct=p["current_position_pct"],
+                trade_points_json=[],
+                trade_points_count=0,
+                latest_trade_at=None,
+                latest_trade_action=None,
+                last_imported_at=now,
+            )
+        )
 
     scheduled_sync: dict[str, list] = {"created": [], "existing": [], "skipped_limit": []}
     if auto_apply_scheduled:
@@ -195,6 +201,7 @@ def clear_imported_portfolio(db: Session, user_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _normalize_code(value: Any) -> str | None:
     text = str(value or "").strip().upper()

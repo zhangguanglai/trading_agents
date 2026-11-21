@@ -43,12 +43,18 @@ def extract_risk_judge_result(text: str) -> dict[str, Any]:
         parse_failed = True
         verdict = "reject"
 
-    hard_constraints = [str(item).strip() for item in (judge_payload.get("hard_constraints") or []) if str(item).strip()]
-    soft_constraints = [str(item).strip() for item in (judge_payload.get("soft_constraints") or []) if str(item).strip()]
+    hard_constraints = [
+        str(item).strip() for item in (judge_payload.get("hard_constraints") or []) if str(item).strip()
+    ]
+    soft_constraints = [
+        str(item).strip() for item in (judge_payload.get("soft_constraints") or []) if str(item).strip()
+    ]
     execution_preconditions = [
         str(item).strip() for item in (judge_payload.get("execution_preconditions") or []) if str(item).strip()
     ]
-    de_risk_triggers = [str(item).strip() for item in (judge_payload.get("de_risk_triggers") or []) if str(item).strip()]
+    de_risk_triggers = [
+        str(item).strip() for item in (judge_payload.get("de_risk_triggers") or []) if str(item).strip()
+    ]
     revision_reason = str(judge_payload.get("revision_reason", "")).strip()
 
     if parse_failed:
@@ -90,9 +96,7 @@ def format_claims_for_prompt(
         evidence = claim.get("evidence") or []
         evidence_text = "；".join(str(item).strip() for item in evidence if str(item).strip()) or "无明确证据"
         prefix = "* " if claim_id in focus_set else "- "
-        lines.append(
-            f"{prefix}{claim_id} [{status}] {speaker}: {summary} | 证据: {evidence_text}"
-        )
+        lines.append(f"{prefix}{claim_id} [{status}] {speaker}: {summary} | 证据: {evidence_text}")
     return "\n".join(lines)
 
 
@@ -106,7 +110,6 @@ def format_claim_subset_for_prompt(
         return empty_message
     subset = [claim for claim in (claims or []) if str(claim.get("claim_id", "")) in claim_id_set]
     return format_claims_for_prompt(subset, focus_claim_ids=claim_id_set, empty_message=empty_message)
-
 
 
 def summarize_risk_feedback(feedback: Mapping[str, Any] | None) -> str:
@@ -175,9 +178,7 @@ def update_debate_state_with_payload(
 
     claims = [dict(item) for item in state.get("claims", [])]
     claim_map = {
-        str(item.get("claim_id", "")).strip(): item
-        for item in claims
-        if str(item.get("claim_id", "")).strip()
+        str(item.get("claim_id", "")).strip(): item for item in claims if str(item.get("claim_id", "")).strip()
     }
 
     claim_counter = int(state.get("claim_counter", 0) or 0)
@@ -213,11 +214,7 @@ def update_debate_state_with_payload(
             continue
         claim_counter += 1
         claim_id = f"{claim_prefix}-{claim_counter}"
-        evidence = [
-            str(item).strip()
-            for item in (claim_payload.get("evidence") or [])[:3]
-            if str(item).strip()
-        ]
+        evidence = [str(item).strip() for item in (claim_payload.get("evidence") or [])[:3] if str(item).strip()]
         confidence = _safe_float(claim_payload.get("confidence"), 0.6)
         target_claim_ids = _filter_known_claim_ids(claim_payload.get("target_claim_ids"), claim_map)
         claim_entry = {

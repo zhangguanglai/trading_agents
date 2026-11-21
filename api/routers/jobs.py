@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
 
-from api.database import UserDB, get_db
+from api.database import UserDB
 from api.dependencies import _require_api_user
-from api.main import JobStatusResponse, _get_job, _require_job_owner, _stream_job_events
+from api.main import JobStatusResponse, _require_job_owner, _stream_job_events
 
 router = APIRouter(tags=["jobs"])
 
@@ -38,6 +37,7 @@ def get_job_result(job_id: str, current_user: UserDB = Depends(_require_api_user
     job = _require_job_owner(job_id, current_user)
     if job["status"] != "completed":
         from fastapi import HTTPException
+
         raise HTTPException(status_code=409, detail=f"job status is {job['status']}")
     return {
         "job_id": job_id,

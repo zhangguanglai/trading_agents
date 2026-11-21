@@ -5,9 +5,9 @@ and compares each decision against subsequent price performance.
 Design: completely non-invasive. Reuses existing TradingAgentsGraph.propagate()
 without touching any existing code.
 """
+
 from __future__ import annotations
 
-import json
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -52,6 +52,7 @@ def delete_job(job_id: str) -> bool:
 # Trading-day utilities (lightweight — no exchange dependency)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _get_trading_dates(start: str, end: str, interval_days: int) -> List[str]:
     """Return a list of weekday dates between start and end, sampled every interval_days."""
     fmt = "%Y-%m-%d"
@@ -68,7 +69,6 @@ def _get_trading_dates(start: str, end: str, interval_days: int) -> List[str]:
 def _get_price_after(symbol: str, base_date: str, hold_days: int) -> Optional[float]:
     """Fetch closing price hold_days trading days after base_date using akshare."""
     try:
-        import akshare as ak
         from tradingagents.dataflows.interface import route_to_vendor
         import pandas as pd
 
@@ -125,7 +125,10 @@ def _get_price_on(symbol: str, date: str) -> Optional[float]:
 # Core backtest runner
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _run_single_analysis(symbol: str, trade_date: str, selected_analysts: List[str], config: Dict[str, Any]) -> Dict[str, Any]:
+
+def _run_single_analysis(
+    symbol: str, trade_date: str, selected_analysts: List[str], config: Dict[str, Any]
+) -> Dict[str, Any]:
     """Run one full analysis without SSE. Returns final state dict."""
     from tradingagents.graph.trading_graph import TradingAgentsGraph
     from tradingagents.dataflows.config import set_config
@@ -159,7 +162,13 @@ def _compute_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Compute win rate and average return from backtest records."""
     trades = [r for r in records if r.get("action") in ("BUY", "SELL") and r.get("return_pct") is not None]
     if not trades:
-        return {"total_signals": 0, "win_rate": None, "avg_return_pct": None, "best_return_pct": None, "worst_return_pct": None}
+        return {
+            "total_signals": 0,
+            "win_rate": None,
+            "avg_return_pct": None,
+            "best_return_pct": None,
+            "worst_return_pct": None,
+        }
 
     wins = 0
     returns = []
@@ -181,9 +190,16 @@ def _compute_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _run_backtest(job_id: str, symbol: str, start_date: str, end_date: str,
-                  selected_analysts: List[str], hold_days: int, sample_interval: int,
-                  config: Dict[str, Any]) -> None:
+def _run_backtest(
+    job_id: str,
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    selected_analysts: List[str],
+    hold_days: int,
+    sample_interval: int,
+    config: Dict[str, Any],
+) -> None:
     """Background thread: run backtest and store results."""
     _set(job_id, status="running", started_at=_utcnow_iso())
 
@@ -199,7 +215,9 @@ def _run_backtest(job_id: str, symbol: str, start_date: str, end_date: str,
             analysis = _run_single_analysis(symbol, trade_date, selected_analysts, config)
             action = _classify_decision(analysis["decision"])
             record["action"] = action
-            record["decision_summary"] = analysis["final_trade_decision"][:200] if analysis.get("final_trade_decision") else ""
+            record["decision_summary"] = (
+                analysis["final_trade_decision"][:200] if analysis.get("final_trade_decision") else ""
+            )
 
             if action in ("BUY", "SELL"):
                 entry_price = _get_price_on(symbol, trade_date)
@@ -216,11 +234,7 @@ def _run_backtest(job_id: str, symbol: str, start_date: str, end_date: str,
         _set(job_id, completed_dates=i + 1, records=list(records))
 
     stats = _compute_stats(records)
-    _set(job_id,
-         status="completed",
-         finished_at=_utcnow_iso(),
-         records=records,
-         stats=stats)
+    _set(job_id, status="completed", finished_at=_utcnow_iso(), records=records, stats=stats)
 
 
 def submit(
@@ -234,21 +248,23 @@ def submit(
 ) -> str:
     """Submit a backtest job. Returns job_id."""
     job_id = uuid4().hex
-    _set(job_id,
-         job_id=job_id,
-         symbol=symbol,
-         start_date=start_date,
-         end_date=end_date,
-         selected_analysts=selected_analysts,
-         hold_days=hold_days,
-         sample_interval=sample_interval,
-         status="pending",
-         created_at=_utcnow_iso(),
-         total_dates=0,
-         completed_dates=0,
-         records=[],
-         stats=None,
-         error=None)
+    _set(
+        job_id,
+        job_id=job_id,
+        symbol=symbol,
+        start_date=start_date,
+        end_date=end_date,
+        selected_analysts=selected_analysts,
+        hold_days=hold_days,
+        sample_interval=sample_interval,
+        status="pending",
+        created_at=_utcnow_iso(),
+        total_dates=0,
+        completed_dates=0,
+        records=[],
+        stats=None,
+        error=None,
+    )
 
     thread = threading.Thread(
         target=_run_backtest,

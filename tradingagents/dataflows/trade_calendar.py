@@ -31,9 +31,7 @@ def _load_cn_trade_dates() -> tuple[list[date], set[date]]:
         if df is None or df.empty or "trade_date" not in df.columns:
             raise ValueError("empty trade date table")
         dates = sorted(
-            pd_dt.date()
-            for pd_dt in pd.to_datetime(df["trade_date"], errors="coerce")
-            if str(pd_dt) != "NaT"
+            pd_dt.date() for pd_dt in pd.to_datetime(df["trade_date"], errors="coerce") if str(pd_dt) != "NaT"
         )
         return dates, set(dates)
     except Exception:

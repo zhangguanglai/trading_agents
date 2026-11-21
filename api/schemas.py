@@ -42,16 +42,18 @@ class AnalyzeRequest(UserContextInput):
     symbol: str = Field(default="", description="股票代码，如 600519.SH（当 query 包含代码时可省略）")
     trade_date: str = Field(default_factory=cn_today_str, description="交易日期 YYYY-MM-DD")
     # 优化：默认减少分析师数量以提升响应速度（核心3个：市场+新闻+基本面）
-    selected_analysts: List[str] = Field(
-        default_factory=lambda: ["market", "news", "fundamentals"]
-    )
+    selected_analysts: List[str] = Field(default_factory=lambda: ["market", "news", "fundamentals"])
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
     # When set, triggers intent-driven analysis via streaming dual-horizon path
     query: Optional[str] = Field(default=None, description="自然语言查询，如：分析贵州茅台短线机会")
-    horizons: List[str] = Field(default_factory=lambda: ["short"], description="分析周期列表，如 ['short'] 或 ['short','medium']")
+    horizons: List[str] = Field(
+        default_factory=lambda: ["short"], description="分析周期列表，如 ['short'] 或 ['short','medium']"
+    )
     # Pre-parsed intent from _ai_extract_symbol_and_date (avoids second LLM call in _run_job)
-    user_intent: Optional[Dict[str, Any]] = Field(default=None, description="预解析的用户意图，由 chat_completions 传入")
+    user_intent: Optional[Dict[str, Any]] = Field(
+        default=None, description="预解析的用户意图，由 chat_completions 传入"
+    )
 
 
 class AnalyzeResponse(BaseModel):
@@ -105,9 +107,7 @@ class ChatCompletionRequest(UserContextInput):
     messages: List[ChatMessage]
     stream: bool = True
     # 优化：默认减少分析师数量以提升响应速度（核心3个：市场+新闻+基本面）
-    selected_analysts: List[str] = Field(
-        default_factory=lambda: ["market", "news", "fundamentals"]
-    )
+    selected_analysts: List[str] = Field(default_factory=lambda: ["market", "news", "fundamentals"])
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
 
@@ -360,6 +360,7 @@ class UserTokenResponse(BaseModel):
 
 class UserTokenListItem(BaseModel):
     """Token info for list endpoint — never exposes the full token."""
+
     id: str
     name: str
     token_hint: Optional[str] = None

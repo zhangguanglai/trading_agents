@@ -20,9 +20,7 @@ def test_deepseek_ignores_openai_default_base_url(monkeypatch):
         "https://api.openai.com/v1/",
         "https://api.openai.com",
     ):
-        llm = _llm_base(
-            create_llm_client(provider="deepseek", model="deepseek-chat", base_url=bad)
-        )
+        llm = _llm_base(create_llm_client(provider="deepseek", model="deepseek-chat", base_url=bad))
         assert llm == "https://api.deepseek.com"
 
 
@@ -36,7 +34,8 @@ def test_deepseek_honors_explicit_custom_gateway(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     llm = _llm_base(
         create_llm_client(
-            provider="deepseek", model="deepseek-chat",
+            provider="deepseek",
+            model="deepseek-chat",
             base_url="https://gw.example.com/v1",
         )
     )
@@ -64,17 +63,33 @@ def test_graph_with_openai_default_backend_url_resolves_deepseek(monkeypatch):
 def _nested_state_skeleton() -> dict:
     """覆盖 _log_state 读取的全部键。"""
     debate = {
-        "bull_history": [], "bear_history": [], "history": [],
-        "current_speaker": "", "current_response": "", "judge_decision": "",
-        "claims": [], "focus_claim_ids": [], "open_claim_ids": [],
-        "resolved_claim_ids": [], "unresolved_claim_ids": [],
-        "round_summary": "", "round_goal": "",
+        "bull_history": [],
+        "bear_history": [],
+        "history": [],
+        "current_speaker": "",
+        "current_response": "",
+        "judge_decision": "",
+        "claims": [],
+        "focus_claim_ids": [],
+        "open_claim_ids": [],
+        "resolved_claim_ids": [],
+        "unresolved_claim_ids": [],
+        "round_summary": "",
+        "round_goal": "",
     }
     risk = {
-        "aggressive_history": [], "conservative_history": [], "neutral_history": [],
-        "history": [], "judge_decision": "", "claims": [],
-        "focus_claim_ids": [], "open_claim_ids": [], "resolved_claim_ids": [],
-        "unresolved_claim_ids": [], "round_summary": "", "round_goal": "",
+        "aggressive_history": [],
+        "conservative_history": [],
+        "neutral_history": [],
+        "history": [],
+        "judge_decision": "",
+        "claims": [],
+        "focus_claim_ids": [],
+        "open_claim_ids": [],
+        "resolved_claim_ids": [],
+        "unresolved_claim_ids": [],
+        "round_summary": "",
+        "round_goal": "",
     }
     return {
         "company_of_interest": "688469",

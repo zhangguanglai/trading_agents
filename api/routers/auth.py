@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from api.database import UserDB, get_db, get_db_ctx
-from api.dependencies import _get_real_ip, _require_api_user, _require_web_user
+from api.dependencies import _get_real_ip, _require_web_user
 from api.main import (
     AuthRequestCodeRequest,
     AuthVerifyCodeRequest,

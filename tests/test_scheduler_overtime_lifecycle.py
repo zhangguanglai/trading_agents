@@ -35,9 +35,7 @@ def test_scheduled_slot_and_success_wait_for_analysis_terminal_outcome():
             call_order.append(f"finish:{job_id}")
 
         mark_success = Mock(side_effect=lambda *_args, **_kwargs: call_order.append("success"))
-        send_notifications = AsyncMock(
-            side_effect=lambda *_args, **_kwargs: call_order.append("notify")
-        )
+        send_notifications = AsyncMock(side_effect=lambda *_args, **_kwargs: call_order.append("notify"))
 
         task_data = {
             "id": "schedule-1",

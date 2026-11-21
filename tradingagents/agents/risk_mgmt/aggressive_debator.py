@@ -1,5 +1,3 @@
-import time
-import json
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.agents.utils.agent_states import current_tracker_var
@@ -15,7 +13,6 @@ def create_aggressive_debator(llm):
     async def aggressive_node(state) -> dict:
         risk_debate_state = state["risk_debate_state"]
         history = risk_debate_state.get("history", "")
-        aggressive_history = risk_debate_state.get("aggressive_history", "")
 
         current_conservative_response = risk_debate_state.get("current_conservative_response", "")
         current_neutral_response = risk_debate_state.get("current_neutral_response", "")
@@ -43,7 +40,9 @@ def create_aggressive_debator(llm):
             current_neutral_response=current_neutral_response,
             focus_claims_text=format_claim_subset_for_prompt(claims, focus_claim_ids),
             unresolved_claims_text=format_claim_subset_for_prompt(claims, unresolved_claim_ids),
-            claims_text=format_claims_for_prompt(claims, empty_message="当前没有已登记风险 claim，本轮请先提出最关键的执行风险。"),
+            claims_text=format_claims_for_prompt(
+                claims, empty_message="当前没有已登记风险 claim，本轮请先提出最关键的执行风险。"
+            ),
             round_summary=round_summary or "暂无风险轮次摘要，请先建立核心风险 claim。",
             round_goal=round_goal,
         )
@@ -60,8 +59,10 @@ def create_aggressive_debator(llm):
             full_content += content
             if tracker:
                 tracker.emit_debate_token(
-                    debate="risk", agent="Aggressive Analyst",
-                    round_num=debate_round, token=content,
+                    debate="risk",
+                    agent="Aggressive Analyst",
+                    round_num=debate_round,
+                    token=content,
                 )
 
         clean_response = strip_tagged_json(full_content, "RISK_STATE")
@@ -80,12 +81,16 @@ def create_aggressive_debator(llm):
         )
         if tracker:
             tracker.emit_debate_message(
-                debate="risk", agent="Aggressive Analyst",
-                round_num=debate_round, content=clean_response,
+                debate="risk",
+                agent="Aggressive Analyst",
+                round_num=debate_round,
+                content=clean_response,
             )
 
         new_risk_debate_state["current_aggressive_response"] = f"Aggressive Analyst: {clean_response}"
-        new_risk_debate_state["current_conservative_response"] = risk_debate_state.get("current_conservative_response", "")
+        new_risk_debate_state["current_conservative_response"] = risk_debate_state.get(
+            "current_conservative_response", ""
+        )
         new_risk_debate_state["current_neutral_response"] = risk_debate_state.get("current_neutral_response", "")
 
         return {"risk_debate_state": new_risk_debate_state}

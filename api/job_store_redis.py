@@ -4,6 +4,7 @@ Uses Redis Hash for job state and Pub/Sub for real-time SSE event delivery,
 enabling multi-worker API deployment where all uvicorn workers share the same
 job state and event stream.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,9 +59,7 @@ class RedisJobStore:
 
     def __init__(self, redis_url: str, prefix: str = "ta:") -> None:
         self._prefix = prefix
-        self._r: redis.Redis = redis.Redis.from_url(
-            redis_url, decode_responses=True
-        )
+        self._r: redis.Redis = redis.Redis.from_url(redis_url, decode_responses=True)
         # Verify connectivity once at creation
         self._r.ping()
         logger.info("RedisJobStore connected to %s (prefix=%r)", redis_url, prefix)
@@ -112,9 +111,7 @@ class RedisJobStore:
         }
         self._r.publish(self._channel_key(job_id), json.dumps(payload, ensure_ascii=False))
 
-    async def subscribe(
-        self, job_id: str, *, poll_interval: float = 8.0
-    ) -> AsyncIterator[Dict[str, Any]]:
+    async def subscribe(self, job_id: str, *, poll_interval: float = 8.0) -> AsyncIterator[Dict[str, Any]]:
         """Async generator yielding events for *job_id*.
 
         Internally spins up a background thread running the blocking Redis

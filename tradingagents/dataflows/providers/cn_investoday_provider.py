@@ -64,17 +64,13 @@ class CnInvestodayProvider(BaseMarketDataProvider):
     def _resolve_api_key(self) -> str:
         """读取今日投资 API Key：配置 investoday_api_key，其次环境变量 INVESTODAY_API_KEY。"""
         config = get_config()
-        return (
-            str(config.get("investoday_api_key", "")).strip()
-            or os.getenv("INVESTODAY_API_KEY", "").strip()
-        )
+        return str(config.get("investoday_api_key", "")).strip() or os.getenv("INVESTODAY_API_KEY", "").strip()
 
     def _require_api_key(self) -> str:
         key = self._resolve_api_key()
         if not key:
             raise NotImplementedError(
-                "cn_investoday 需要 API Key。请在配置中设置 investoday_api_key "
-                "或环境变量 INVESTODAY_API_KEY。"
+                "cn_investoday 需要 API Key。请在配置中设置 investoday_api_key 或环境变量 INVESTODAY_API_KEY。"
             )
         return key
 
@@ -216,9 +212,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         return header + out.to_csv(index=False)
 
-    def _fetch_adjusted_hist_df(
-        self, symbol: str, start_date: str, end_date: str
-    ) -> pd.DataFrame:
+    def _fetch_adjusted_hist_df(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """前复权日行情合并分页后的 DataFrame。"""
         api_key = self._require_api_key()
         code = self._normalize_stock_code(symbol)
@@ -235,9 +229,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
 
     def _fetch_one_realtime(self, stock_code: str, api_key: str, base_url: str) -> dict[str, Any] | None:
         """单股实时日行情。"""
-        payload = self._request_investoday(
-            _REALTIME_PATH, {"stockCode": stock_code}, api_key, base_url
-        )
+        payload = self._request_investoday(_REALTIME_PATH, {"stockCode": stock_code}, api_key, base_url)
         if not payload:
             return None
         data = payload.get("data")
@@ -296,9 +288,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
                 result[original] = row
 
         if not result:
-            raise NotImplementedError(
-                "cn_investoday 未获取到任何实时行情（请检查 stockCode、额度与网络）。"
-            )
+            raise NotImplementedError("cn_investoday 未获取到任何实时行情（请检查 stockCode、额度与网络）。")
 
         return json.dumps(result, ensure_ascii=False)
 
@@ -376,9 +366,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
             )
         data = payload.get("data")
         if not isinstance(data, list):
-            raise NotImplementedError(
-                "cn_investoday 新闻接口返回格式异常（data 非列表），请换用其它数据源。"
-            )
+            raise NotImplementedError("cn_investoday 新闻接口返回格式异常（data 非列表），请换用其它数据源。")
         filtered = self._news_rows_in_range(data, start_date, end_date)
         if not filtered:
             return f"No news found for {ticker} between {start_date} and {end_date}"
@@ -388,9 +376,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
             parts.extend(self._format_news_item(item))
         return "\n".join(parts).rstrip() + "\n"
 
-    def get_global_news(
-        self, curr_date: str, look_back_days: int = 7, limit: int = 50
-    ) -> str:
+    def get_global_news(self, curr_date: str, look_back_days: int = 7, limit: int = 50) -> str:
         """全市场新闻：优先宏观 ``newsType=1``，空则去掉类型重试。"""
         api_key = self._require_api_key()
         end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
@@ -428,9 +414,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
                 )
             data2 = payload2.get("data")
             if not isinstance(data2, list):
-                raise NotImplementedError(
-                    "cn_investoday 全市场新闻返回格式异常（data 非列表），请换用其它数据源。"
-                )
+                raise NotImplementedError("cn_investoday 全市场新闻返回格式异常（data 非列表），请换用其它数据源。")
             rows = data2
 
         start_label = start_dt.strftime("%Y-%m-%d")
@@ -450,9 +434,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
         df = self._slice_hist_df(df, start_date, end_date)
         return self._format_hist_csv(df, symbol, start_date, end_date)
 
-    def get_indicators(
-        self, symbol: str, indicator: str, curr_date: str, look_back_days: int
-    ) -> str:
+    def get_indicators(self, symbol: str, indicator: str, curr_date: str, look_back_days: int) -> str:
         """基于前复权 OHLCV + stockstats，与 ``cn_akshare`` 指标名及输出格式对齐。"""
         if indicator not in self.INDICATOR_DESCRIPTIONS:
             raise ValueError(
@@ -462,9 +444,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
         self._require_api_key()
         curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
         start_dt = curr_dt - timedelta(days=max(look_back_days, 260))
-        df = self._fetch_adjusted_hist_df(
-            symbol, start_dt.strftime("%Y-%m-%d"), curr_date
-        )
+        df = self._fetch_adjusted_hist_df(symbol, start_dt.strftime("%Y-%m-%d"), curr_date)
         df = self._slice_hist_df(df, start_dt.strftime("%Y-%m-%d"), curr_date)
         if df is None or df.empty:
             return f"No data found for {symbol} for indicator {indicator}"
@@ -521,13 +501,9 @@ class CnInvestodayProvider(BaseMarketDataProvider):
             raise NotImplementedError(f"cn_investoday 无法解析证券代码: {ticker}")
 
         base_url = self._resolve_base_url()
-        payload = self._request_investoday(
-            _COMPANY_PROFILES_PATH, {"stockCode": code}, api_key, base_url
-        )
+        payload = self._request_investoday(_COMPANY_PROFILES_PATH, {"stockCode": code}, api_key, base_url)
         if payload is None:
-            raise NotImplementedError(
-                "cn_investoday 公司信息接口请求失败，请换用其它数据源。"
-            )
+            raise NotImplementedError("cn_investoday 公司信息接口请求失败，请换用其它数据源。")
         data = payload.get("data")
         if not isinstance(data, list) or not data:
             return f"## Fundamentals for {ticker}\n\n未获取到公司基本信息。"
@@ -576,9 +552,7 @@ class CnInvestodayProvider(BaseMarketDataProvider):
             raise NotImplementedError(f"cn_investoday 无法解析证券代码: {ticker}")
 
         end_d = curr_date or datetime.now().strftime("%Y-%m-%d")
-        begin_d = (datetime.strptime(end_d, "%Y-%m-%d") - timedelta(days=365 * 8)).strftime(
-            "%Y-%m-%d"
-        )
+        begin_d = (datetime.strptime(end_d, "%Y-%m-%d") - timedelta(days=365 * 8)).strftime("%Y-%m-%d")
         path = self._financial_path(kind, freq)
         base_url = self._resolve_base_url()
         rows = self._fetch_paged_list(
@@ -592,23 +566,15 @@ class CnInvestodayProvider(BaseMarketDataProvider):
         df = pd.DataFrame(rows)
         table = self._shrink_table(df, max_rows=12, max_cols=18).to_string(index=False)
         freq_note = "单季度" if self._is_quarterly_freq(freq) else "合并/报告期口径以接口为准"
-        return (
-            f"## {title_cn} ({ticker}) — 今日投资 {path}（{freq_note}）\n\n{table}"
-        )
+        return f"## {title_cn} ({ticker}) — 今日投资 {path}（{freq_note}）\n\n{table}"
 
-    def get_balance_sheet(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_balance_sheet(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         return self._financial_report_markdown("balance", "资产负债表", ticker, freq, curr_date)
 
-    def get_cashflow(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_cashflow(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         return self._financial_report_markdown("cashflow", "现金流量表", ticker, freq, curr_date)
 
-    def get_income_statement(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_income_statement(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         return self._financial_report_markdown("income", "利润表", ticker, freq, curr_date)
 
     def get_insider_transactions(self, symbol: str) -> str:

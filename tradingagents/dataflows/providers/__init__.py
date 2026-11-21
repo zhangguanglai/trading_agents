@@ -6,4 +6,3 @@ __all__ = [
     "DataProviderRegistry",
     "build_default_registry",
 ]
-

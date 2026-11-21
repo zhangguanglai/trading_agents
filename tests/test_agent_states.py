@@ -1,6 +1,7 @@
 import operator
 from tradingagents.agents.utils.agent_states import UserIntent, TraceItem, extract_verdict
 
+
 def test_user_intent_typeddict():
     intent: UserIntent = {
         "raw_query": "分析600519短线",
@@ -11,6 +12,7 @@ def test_user_intent_typeddict():
     }
     assert intent["ticker"] == "600519"
     assert intent["horizons"] == ["short", "medium"]
+
 
 def test_trace_item_typeddict():
     trace: TraceItem = {
@@ -23,6 +25,7 @@ def test_trace_item_typeddict():
     }
     assert trace["verdict"] == "看空"
     assert trace["confidence"] == "中"
+
 
 def test_trace_list_accumulation():
     t1 = [{"agent": "market_analyst", "verdict": "看空"}]

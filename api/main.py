@@ -14,8 +14,8 @@ import logging
 # Configure standard logging to include timestamps
 logging.basicConfig(
     level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="[%(asctime)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
@@ -138,6 +138,7 @@ from api.context_helpers import (  # noqa: F401
     _ai_extract_symbol_and_date,
 )
 
+
 # Thin wrapper rather than a bare alias: routers call the scheduling name while
 # tests patch ``_run_manual_trigger``, so resolve it through the module namespace
 # at call time. Kept sync on purpose — it returns the coroutine untouched, so a
@@ -148,6 +149,7 @@ def _run_scheduled_analysis_once(
     job_id: str,
 ):
     return _run_manual_trigger(task, requested_trade_date, job_id)
+
 
 from api.database import SponsorDB, FeedbackDB, init_db
 from api.database import get_db_ctx  # noqa: F401  (accessed lazily as api.main.get_db_ctx)
@@ -181,7 +183,8 @@ def _cors_allow_origin_regex() -> str | None:
 
 def _report_version_stats() -> None:
     """Report anonymous version stats to a configurable endpoint."""
-    import threading, uuid
+    import threading
+    import uuid
 
     url = os.getenv("VERSION_STATS_URL", "").strip()
     if not url:
@@ -261,6 +264,7 @@ async def lifespan(app: FastAPI):
     _report_version_stats()
     # Pre-load trade calendar (uses mini_racer/V8 which is not thread-safe)
     from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates
+
     _load_cn_trade_dates()
     _log("Trade calendar pre-loaded.")
     # Stock map is now lazy-loaded with local cache, no need to pre-load on startup
@@ -283,6 +287,7 @@ def _get_version() -> str:
         return v
     try:
         from importlib.metadata import version as pkg_version
+
         return pkg_version("tradingagents")
     except Exception:
         return "dev"
@@ -355,7 +360,7 @@ def run() -> None:
         port=8000,
         reload=False,
         log_config=log_config,
-        timeout_keep_alive=900,       # 15分钟，匹配分析总耗时
+        timeout_keep_alive=900,  # 15分钟，匹配分析总耗时
         timeout_graceful_shutdown=30,
     )
 
@@ -421,4 +426,3 @@ app.include_router(chip_deep_router)
 app.include_router(misc_router)
 
 mount_static_files(app)
-

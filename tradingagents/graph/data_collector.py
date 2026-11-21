@@ -1,4 +1,5 @@
 """DataCollector: fetch all data once, serve windowed views to analyst agents."""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
@@ -8,13 +9,13 @@ import logging
 import os
 import threading
 import time
+import numpy as np
 import pandas as pd
 from stockstats import wrap
 import io
 
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
-    get_indicators,
     get_fundamentals,
     get_balance_sheet,
     get_cashflow,
@@ -32,8 +33,16 @@ from tradingagents.agents.utils.agent_utils import (
 logger = logging.getLogger(__name__)
 
 INDICATORS = [
-    "close_50_sma", "close_200_sma", "close_10_ema",
-    "rsi", "macd", "boll", "boll_ub", "boll_lb", "atr", "vwma",
+    "close_50_sma",
+    "close_200_sma",
+    "close_10_ema",
+    "rsi",
+    "macd",
+    "boll",
+    "boll_ub",
+    "boll_lb",
+    "atr",
+    "vwma",
 ]
 SHORT_DAYS = 14
 LONG_DAYS = 90
@@ -42,8 +51,6 @@ LONG_DAYS = 90
 # 设硬上限，否则卡死线程会拿着 per-key 锁把后续同标的分析全部拖死，
 # 并逐渐占满 asyncio 默认线程池（生产事故：64/64 全部僵死 → 前端 524）。
 FETCH_ALL_TIMEOUT = int(os.getenv("TA_DATA_FETCH_TIMEOUT", "300"))
-
-import numpy as np
 
 _OHLCV_COLS = ["date", "open", "high", "low", "close", "volume"]
 
@@ -56,7 +63,7 @@ def _parse_csv_to_dataframe(raw_csv: str) -> Optional[pd.DataFrame]:
     if not isinstance(raw_csv, str) or len(raw_csv) <= 50:
         return None
     try:
-        df = pd.read_csv(io.StringIO(raw_csv), on_bad_lines='skip', comment='#')
+        df = pd.read_csv(io.StringIO(raw_csv), on_bad_lines="skip", comment="#")
     except Exception:
         return None
     if df.empty:
@@ -107,7 +114,8 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
         0.5,
     )
     df["bar_type"] = np.where(
-        df["close"] > df["open"], "阳线",
+        df["close"] > df["open"],
+        "阳线",
         np.where(df["close"] < df["open"], "阴线", "十字星"),
     )
 
@@ -132,13 +140,17 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
 
     # 量价一致性
     df["vp_harmony"] = np.where(
-        (df["pct_change"] > 0) & (df["volume_ratio"] > 1.0), "一致(涨+放量)",
+        (df["pct_change"] > 0) & (df["volume_ratio"] > 1.0),
+        "一致(涨+放量)",
         np.where(
-            (df["pct_change"] < 0) & (df["volume_ratio"] > 1.0), "一致(跌+放量)",
+            (df["pct_change"] < 0) & (df["volume_ratio"] > 1.0),
+            "一致(跌+放量)",
             np.where(
-                (df["pct_change"] > 0) & (df["volume_ratio"] < 0.8), "背离(涨+缩量)",
+                (df["pct_change"] > 0) & (df["volume_ratio"] < 0.8),
+                "背离(涨+缩量)",
                 np.where(
-                    (df["pct_change"] < 0) & (df["volume_ratio"] < 0.8), "背离(跌+缩量)",
+                    (df["pct_change"] < 0) & (df["volume_ratio"] < 0.8),
+                    "背离(跌+缩量)",
                     "中性",
                 ),
             ),
@@ -207,10 +219,10 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
 
     # 量价背离检测（近5天）
     last5 = recent.tail(5)
-    price_up = (last5["close"].iloc[-1] > last5["close"].iloc[0])
-    vol_down = (last5["volume"].iloc[-1] < last5["volume"].iloc[0])
-    price_down = (last5["close"].iloc[-1] < last5["close"].iloc[0])
-    vol_up = (last5["volume"].iloc[-1] > last5["volume"].iloc[0])
+    price_up = last5["close"].iloc[-1] > last5["close"].iloc[0]
+    vol_down = last5["volume"].iloc[-1] < last5["volume"].iloc[0]
+    price_down = last5["close"].iloc[-1] < last5["close"].iloc[0]
+    vol_up = last5["volume"].iloc[-1] > last5["volume"].iloc[0]
 
     if price_up and vol_down:
         lines.append("- **⚠ 顶部背离信号**: 近5日价格上涨但成交量递减，上涨动能可能衰竭")
@@ -226,22 +238,28 @@ def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
         if i < -len(recent):
             continue
         row = recent.iloc[i]
-        if (row.get("volume_ratio", 0) > 2.0
-                and row.get("pct_change", 0) < -0.03
-                and row.get("close_position", 0.5) > 0.5):
-            lines.append(f"- **卖出高潮(Selling Climax)**: {str(row.get('date', ''))[-5:]} 急跌巨量但收盘收回过半，可能是恐慌见底")
+        if (
+            row.get("volume_ratio", 0) > 2.0
+            and row.get("pct_change", 0) < -0.03
+            and row.get("close_position", 0.5) > 0.5
+        ):
+            lines.append(
+                f"- **卖出高潮(Selling Climax)**: {str(row.get('date', ''))[-5:]} 急跌巨量但收盘收回过半，可能是恐慌见底"
+            )
 
     # 高位放量滞涨
     for i in range(-3, 0):
         if i < -len(recent):
             continue
         row = recent.iloc[i]
-        if (row.get("volume_ratio", 0) > 1.8
-                and abs(row.get("pct_change", 0)) < 0.01
-                and row.get("bar_spread", 0) < 0.015):
+        if (
+            row.get("volume_ratio", 0) > 1.8
+            and abs(row.get("pct_change", 0)) < 0.01
+            and row.get("bar_spread", 0) < 0.015
+        ):
             lines.append(f"- **放量滞涨**: {str(row.get('date', ''))[-5:]} 巨量但价格几乎不动（窄实体），多空分歧大")
 
-    if not any("**" in l for l in lines[-5:]):
+    if not any("**" in line for line in lines[-5:]):
         lines.append("- 近期无显著量价异常模式")
 
     return "\n".join(lines)
@@ -278,7 +296,14 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
 
     tasks: Dict[str, tuple] = {
         "stock_data": (get_stock_data, {"symbol": ticker, "start_date": start_str, "end_date": trade_date}),
-        "news": (get_news, {"ticker": ticker, "start_date": (end_dt - timedelta(days=lookback)).strftime("%Y-%m-%d"), "end_date": trade_date}),
+        "news": (
+            get_news,
+            {
+                "ticker": ticker,
+                "start_date": (end_dt - timedelta(days=lookback)).strftime("%Y-%m-%d"),
+                "end_date": trade_date,
+            },
+        ),
         "global_news": (get_global_news, {"curr_date": trade_date, "look_back_days": lookback, "limit": 30}),
         "fund_flow_board": (get_board_fund_flow, {}),
         "fund_flow_individual": (get_individual_fund_flow, {"symbol": ticker}),
@@ -289,12 +314,17 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
     }
 
     # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
-    tasks.update({
-        "fundamentals": (get_fundamentals, {"ticker": ticker, "curr_date": trade_date}),
-        "balance_sheet": (get_balance_sheet, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
-        "cashflow": (get_cashflow, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
-        "income_statement": (get_income_statement, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
-    })
+    tasks.update(
+        {
+            "fundamentals": (get_fundamentals, {"ticker": ticker, "curr_date": trade_date}),
+            "balance_sheet": (get_balance_sheet, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+            "cashflow": (get_cashflow, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+            "income_statement": (
+                get_income_statement,
+                {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date},
+            ),
+        }
+    )
 
     results: Dict[str, Any] = {}
     fetch_start = time.time()
@@ -338,7 +368,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
                 "boll_ub": "boll_ub",
                 "boll_lb": "boll_lb",
                 "atr": "atr",
-                "vwma": "vwma"
+                "vwma": "vwma",
             }
 
             for key, ss_key in calc_map.items():
@@ -398,8 +428,7 @@ class DataCollector:
         # 报错退出，而不是把线程池 worker 一个个吸进来陪葬
         if not key_lock.acquire(timeout=FETCH_ALL_TIMEOUT + 60):
             raise TimeoutError(
-                f"等待 {key} 数据抓取锁超时（>{FETCH_ALL_TIMEOUT + 60}s），"
-                "可能存在卡死的抓取任务，本次分析中止"
+                f"等待 {key} 数据抓取锁超时（>{FETCH_ALL_TIMEOUT + 60}s），可能存在卡死的抓取任务，本次分析中止"
             )
         try:
             if key not in self._cache:

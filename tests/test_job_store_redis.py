@@ -3,6 +3,7 @@
 Skipped automatically when Redis is not reachable on localhost.
 Uses DB 15 to avoid conflicts with production data.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ import redis
 
 _REDIS_TEST_URL = os.environ.get("REDIS_TEST_URL", "redis://localhost:6379/15")
 
+
 def _redis_available() -> bool:
     try:
         r = redis.Redis.from_url(_REDIS_TEST_URL, decode_responses=True)
@@ -26,6 +28,7 @@ def _redis_available() -> bool:
         return True
     except Exception:
         return False
+
 
 pytestmark = pytest.mark.skipif(
     not _redis_available(),
@@ -38,6 +41,7 @@ from api.job_store_redis import RedisJobStore  # noqa: E402
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def store():
@@ -53,6 +57,7 @@ def store():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_set_and_get(store: RedisJobStore):
     store.set_job("j1", status="running", symbol="AAPL")
@@ -129,7 +134,7 @@ def test_pubsub(store: RedisJobStore):
         # We need the subscriber thread to be up before publishing.
         # Advance the generator to start the thread, then emit events.
         # Use a small delay to let the thread subscribe.
-        it = gen.__aiter__()
+        gen.__aiter__()
 
         # Emit after a short delay to give listener time to subscribe
         async def _emit_later():

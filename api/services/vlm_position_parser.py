@@ -2,6 +2,7 @@
 
 Uses the generic VLM service (vlm_service.py) for image recognition.
 """
+
 from __future__ import annotations
 
 import json
@@ -40,7 +41,7 @@ def _parse_response(raw: str) -> list[dict[str, Any]]:
     text = raw.strip()
     if text.startswith("```"):
         lines = text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         text = "\n".join(lines).strip()
     try:
         items = json.loads(text)
@@ -58,13 +59,15 @@ def _parse_response(raw: str) -> list[dict[str, Any]]:
         symbol = str(item.get("symbol", "")).strip()
         if not symbol:
             continue
-        result.append({
-            "symbol": symbol,
-            "name": item.get("name"),
-            "current_position": _to_float(item.get("current_position")),
-            "average_cost": _to_float(item.get("average_cost")),
-            "market_value": _to_float(item.get("market_value")),
-        })
+        result.append(
+            {
+                "symbol": symbol,
+                "name": item.get("name"),
+                "current_position": _to_float(item.get("current_position")),
+                "average_cost": _to_float(item.get("average_cost")),
+                "market_value": _to_float(item.get("market_value")),
+            }
+        )
     return result
 
 

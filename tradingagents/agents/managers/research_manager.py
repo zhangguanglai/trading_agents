@@ -93,8 +93,10 @@ def create_research_manager(llm, memory):
                 if tracker:
                     tracker._emit_token("Research Manager", "investment_plan", content)
                     tracker.emit_debate_token(
-                        debate="research", agent="Research Manager",
-                        round_num=-1, token=content,
+                        debate="research",
+                        agent="Research Manager",
+                        round_num=-1,
+                        token=content,
                     )
 
         total_elapsed = time.monotonic() - start
@@ -119,8 +121,11 @@ def create_research_manager(llm, memory):
         # ── 推送辩论裁决（标记流式结束）──
         if tracker:
             tracker.emit_debate_message(
-                debate="research", agent="Research Manager",
-                round_num=-1, content=full_content, is_verdict=True,
+                debate="research",
+                agent="Research Manager",
+                round_num=-1,
+                content=full_content,
+                is_verdict=True,
             )
 
         new_investment_debate_state = {

@@ -19,10 +19,7 @@ def list_watchlist(db: Session, user_id: str) -> List[dict]:
         .all()
     )
     scheduled_symbols = set(
-        row.symbol for row in
-        db.query(ScheduledAnalysisDB.symbol)
-        .filter(ScheduledAnalysisDB.user_id == user_id)
-        .all()
+        row.symbol for row in db.query(ScheduledAnalysisDB.symbol).filter(ScheduledAnalysisDB.user_id == user_id).all()
     )
     return [
         {
@@ -43,9 +40,7 @@ def add_watchlist_item(db: Session, user_id: str, symbol: str) -> dict:
         raise ValueError(f"自选股数量已达上限 ({MAX_WATCHLIST_ITEMS})")
 
     existing = (
-        db.query(WatchlistItemDB)
-        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
-        .first()
+        db.query(WatchlistItemDB).filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol).first()
     )
     if existing:
         raise ValueError(f"{symbol} 已在自选列表中")
@@ -68,30 +63,30 @@ def add_watchlist_items(db: Session, user_id: str, symbols: List[str]) -> List[d
     for symbol in symbols:
         try:
             item = add_watchlist_item(db, user_id, symbol)
-            results.append({
-                "symbol": symbol,
-                "status": "added",
-                "item": item,
-                "message": "已添加到自选列表",
-            })
+            results.append(
+                {
+                    "symbol": symbol,
+                    "status": "added",
+                    "item": item,
+                    "message": "已添加到自选列表",
+                }
+            )
         except ValueError as exc:
             message = str(exc)
             status = "duplicate" if "已在自选列表" in message else "failed"
-            results.append({
-                "symbol": symbol,
-                "status": status,
-                "message": message,
-            })
+            results.append(
+                {
+                    "symbol": symbol,
+                    "status": status,
+                    "message": message,
+                }
+            )
     return results
 
 
 def delete_watchlist_item(db: Session, user_id: str, item_id: str) -> bool:
     """Delete a watchlist item. Returns True if found and deleted."""
-    item = (
-        db.query(WatchlistItemDB)
-        .filter(WatchlistItemDB.id == item_id, WatchlistItemDB.user_id == user_id)
-        .first()
-    )
+    item = db.query(WatchlistItemDB).filter(WatchlistItemDB.id == item_id, WatchlistItemDB.user_id == user_id).first()
     if not item:
         return False
     db.delete(item)

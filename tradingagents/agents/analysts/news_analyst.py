@@ -39,33 +39,43 @@ def create_news_analyst(llm, data_collector=None):
         else:
             from datetime import datetime, timedelta
             from tradingagents.agents.utils.agent_utils import get_news, get_global_news
+
             days = 14 if horizon == "short" else 30
             end_dt = datetime.strptime(current_date, "%Y-%m-%d")
             start_dt = end_dt - timedelta(days=days)
-            
+
             # Parallelize fallback fetches
             results = await asyncio.gather(
-                _safe(get_news, {
-                    "ticker": ticker, "start_date": start_dt.strftime("%Y-%m-%d"), "end_date": current_date,
-                }),
-                _safe(get_global_news, {
-                    "curr_date": current_date, "look_back_days": days, "limit": 10,
-                })
+                _safe(
+                    get_news,
+                    {
+                        "ticker": ticker,
+                        "start_date": start_dt.strftime("%Y-%m-%d"),
+                        "end_date": current_date,
+                    },
+                ),
+                _safe(
+                    get_global_news,
+                    {
+                        "curr_date": current_date,
+                        "look_back_days": days,
+                        "limit": 10,
+                    },
+                ),
             )
             stock_news, global_news = results
             data_window = f"{days}天"
 
         messages = [
-            SystemMessage(content=(
-                system_message
-                + "\n\n请严格基于提供的新闻资料输出报告，全程使用中文。"
-            )),
-            HumanMessage(content=(
-                horizon_ctx + "\n"
-                f"以下是 {ticker} 在 {current_date} 的新闻资料（{data_window}）。\n\n"
-                f"【get_news】\n{stock_news}\n\n"
-                f"【get_global_news】\n{global_news}\n"
-            )),
+            SystemMessage(content=(system_message + "\n\n请严格基于提供的新闻资料输出报告，全程使用中文。")),
+            HumanMessage(
+                content=(
+                    horizon_ctx + "\n"
+                    f"以下是 {ticker} 在 {current_date} 的新闻资料（{data_window}）。\n\n"
+                    f"【get_news】\n{stock_news}\n\n"
+                    f"【get_global_news】\n{global_news}\n"
+                )
+            ),
         ]
 
         # ── 实现 Token 级流式输出 ──────────────────
@@ -80,14 +90,16 @@ def create_news_analyst(llm, data_collector=None):
         verdict, confidence = extract_verdict(full_content)
         return {
             "news_report": full_content,
-            "analyst_traces": [{
-                "agent": "news_analyst",
-                "horizon": horizon,
-                "data_window": data_window,
-                "key_finding": f"新闻分析结论：{verdict}",
-                "verdict": verdict,
-                "confidence": confidence,
-            }],
+            "analyst_traces": [
+                {
+                    "agent": "news_analyst",
+                    "horizon": horizon,
+                    "data_window": data_window,
+                    "key_finding": f"新闻分析结论：{verdict}",
+                    "verdict": verdict,
+                    "confidence": confidence,
+                }
+            ],
         }
 
     return news_analyst_node

@@ -34,8 +34,12 @@ def test_investoday_get_realtime_quotes_maps_fields():
     mock_resp.json.return_value = api_body
 
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="test-key"), \
-         patch("tradingagents.dataflows.providers.cn_investoday_provider.requests.get", return_value=mock_resp) as mock_get:
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="test-key"),
+        patch(
+            "tradingagents.dataflows.providers.cn_investoday_provider.requests.get", return_value=mock_resp
+        ) as mock_get,
+    ):
         out = provider.get_realtime_quotes(["002594.SZ"])
 
     mock_get.assert_called_once()
@@ -85,8 +89,10 @@ def test_investoday_get_realtime_quotes_all_failed_raises():
     mock_resp.json.return_value = {"code": 1, "message": "error", "data": None}
 
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="k"), \
-         patch("tradingagents.dataflows.providers.cn_investoday_provider.requests.get", return_value=mock_resp):
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="k"),
+        patch("tradingagents.dataflows.providers.cn_investoday_provider.requests.get", return_value=mock_resp),
+    ):
         with pytest.raises(NotImplementedError, match="未获取到任何实时行情"):
             provider.get_realtime_quotes(["600519.SH"])
 
@@ -124,11 +130,13 @@ def test_investoday_get_news_success():
         ],
     }
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="k"), \
-         patch(
-             "tradingagents.dataflows.providers.cn_investoday_provider.requests.get",
-             return_value=_mock_json_response(body),
-         ) as mock_get:
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="k"),
+        patch(
+            "tradingagents.dataflows.providers.cn_investoday_provider.requests.get",
+            return_value=_mock_json_response(body),
+        ) as mock_get,
+    ):
         out = provider.get_news("600519.SH", "2025-04-01", "2025-04-03")
 
     assert "## 600519.SH 新闻" in out
@@ -164,11 +172,13 @@ def test_investoday_get_news_empty_returns_message():
 
     body = {"code": 0, "message": "success", "data": []}
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="k"), \
-         patch(
-             "tradingagents.dataflows.providers.cn_investoday_provider.requests.get",
-             return_value=_mock_json_response(body),
-         ):
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="k"),
+        patch(
+            "tradingagents.dataflows.providers.cn_investoday_provider.requests.get",
+            return_value=_mock_json_response(body),
+        ),
+    ):
         out = provider.get_news("600519.SH", "2025-04-01", "2025-04-02")
     assert "No news found" in out
 
@@ -183,11 +193,13 @@ def test_investoday_get_global_news_uses_macro_then_broad_fallback():
         "data": [{"date": "2025-04-01 10:00:00", "title": "宏观条目", "summary": "正文"}],
     }
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="k"), \
-         patch(
-             "tradingagents.dataflows.providers.cn_investoday_provider.requests.get",
-             side_effect=[_mock_json_response(empty_macro), _mock_json_response(broad)],
-         ) as mock_get:
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="k"),
+        patch(
+            "tradingagents.dataflows.providers.cn_investoday_provider.requests.get",
+            side_effect=[_mock_json_response(empty_macro), _mock_json_response(broad)],
+        ) as mock_get,
+    ):
         out = provider.get_global_news("2025-04-02", look_back_days=2, limit=10)
 
     assert mock_get.call_count == 2
@@ -210,11 +222,13 @@ def test_investoday_get_global_news_request_fail_raises():
     from tradingagents.dataflows.providers.cn_investoday_provider import CnInvestodayProvider
 
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="k"), \
-         patch(
-             "tradingagents.dataflows.providers.cn_investoday_provider.requests.get",
-             side_effect=OSError("network down"),
-         ):
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="k"),
+        patch(
+            "tradingagents.dataflows.providers.cn_investoday_provider.requests.get",
+            side_effect=OSError("network down"),
+        ),
+    ):
         with pytest.raises(NotImplementedError, match="cn_investoday"):
             provider.get_global_news("2025-04-02", look_back_days=1, limit=5)
 
@@ -241,8 +255,10 @@ def test_investoday_get_stock_data_csv_from_adjusted_quotes():
         },
     ]
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="k"), \
-         patch.object(provider, "_fetch_paged_list", return_value=rows):
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="k"),
+        patch.object(provider, "_fetch_paged_list", return_value=rows),
+    ):
         out = provider.get_stock_data("600519.SH", "2025-01-02", "2025-01-03")
 
     assert "# Stock data for 600519.SH" in out
@@ -269,8 +285,10 @@ def test_investoday_get_indicators_rsi_uses_stockstats():
             }
         )
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="k"), \
-         patch.object(provider, "_fetch_paged_list", return_value=rows):
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="k"),
+        patch.object(provider, "_fetch_paged_list", return_value=rows),
+    ):
         out = provider.get_indicators("000001.SZ", "rsi", "2024-09-28", look_back_days=14)
 
     assert "rsi" in out.lower()
@@ -286,8 +304,10 @@ def test_investoday_get_fundamentals_profiles():
         "data": [{"stockCode": "600519", "stockName": "Moutai", "mainBusiness": "Beverage"}],
     }
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="k"), \
-         patch.object(provider, "_request_investoday", return_value=body):
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="k"),
+        patch.object(provider, "_request_investoday", return_value=body),
+    ):
         out = provider.get_fundamentals("600519.SH")
 
     assert "600519" in out or "Moutai" in out
@@ -306,8 +326,10 @@ def test_investoday_get_insider_exec_shrhld_markdown():
         }
     ]
     provider = CnInvestodayProvider()
-    with patch.object(provider, "_resolve_api_key", return_value="k"), \
-         patch.object(provider, "_fetch_paged_list", return_value=rows):
+    with (
+        patch.object(provider, "_resolve_api_key", return_value="k"),
+        patch.object(provider, "_fetch_paged_list", return_value=rows),
+    ):
         out = provider.get_insider_transactions("600519.SH")
 
     assert "高管持股变动" in out or "exec-shrhld-chg" in out

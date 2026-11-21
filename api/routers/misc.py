@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -18,7 +18,6 @@ from api.main import (
     BacktestRequest,
     SponsorItem,
     SponsorsResponse,
-    _report_version_stats,
 )
 from api.services import backtest_service as _bt, sponsor_service
 
@@ -81,10 +80,11 @@ def version_stats(payload: Dict[str, Any] = Body(...), request: Request = None, 
 def submit_backtest(
     request: BacktestRequest,
     db: Session = Depends(get_db),
-    current_user = Depends(_require_api_user),
+    current_user=Depends(_require_api_user),
 ) -> Dict:
     """提交历史回测任务，返回 job_id."""
     from api.main import _build_runtime_config
+
     config = _build_runtime_config(request.config_overrides or {}, user_id=current_user.id, db=db)
     job_id = _bt.submit(
         symbol=request.symbol,
@@ -108,7 +108,7 @@ def list_backtests() -> Dict:
 @router.get("/v1/backtest/{job_id}")
 def get_backtest(job_id: str) -> Dict:
     """获取回测任务状态和结果."""
-    from fastapi import HTTPException
+
     job = _bt.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="回测任务不存在")
@@ -118,7 +118,7 @@ def get_backtest(job_id: str) -> Dict:
 @router.delete("/v1/backtest/{job_id}")
 def delete_backtest(job_id: str) -> Dict:
     """删除回测任务."""
-    from fastapi import HTTPException
+
     if not _bt.delete_job(job_id):
         raise HTTPException(status_code=404, detail="回测任务不存在")
     return {"message": "已删除"}
@@ -169,17 +169,17 @@ def mount_static_files(app: FastAPI) -> None:
         async def serve_frontend(full_path: str):
             # 1. Define and resolve the absolute safe root
             base_path = os.path.realpath(dist_path)
-            
+
             # 2. Resolve the requested path (handling .. and symlinks)
             fullpath = os.path.realpath(os.path.join(base_path, full_path.lstrip("/")))
-            
+
             # 3. Security Check: The normalized path must start with the base_path
             if not fullpath.startswith(base_path):
                 return FileResponse(os.path.join(base_path, "index.html"))
-                
+
             # 4. Final check: if it's a valid file, serve it
             if os.path.isfile(fullpath):
                 return FileResponse(fullpath)
-                
+
             # Otherwise fallback to index.html for SPA routing
             return FileResponse(os.path.join(base_path, "index.html"))

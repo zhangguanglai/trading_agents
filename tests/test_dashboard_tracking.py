@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from api.database import ImportedPortfolioPositionDB, ReportDB, UserDB, get_db_ctx, init_db
+from api.database import ImportedPortfolioPositionDB, UserDB, get_db_ctx, init_db
 from api.services import auth_service, report_service
 
 
@@ -38,38 +38,40 @@ class TestDashboardTrackingApi:
         now = datetime.now(timezone.utc)
 
         with get_db_ctx() as db:
-            db.add_all([
-                ImportedPortfolioPositionDB(
-                    id=uuid4().hex,
-                    user_id=user_id,
-                    source="manual",
-                    symbol="600519.SH",
-                    security_name="贵州茅台",
-                    current_position=500.0,
-                    available_position=480.0,
-                    average_cost=1700.0,
-                    market_value=850000.0,
-                    current_position_pct=95.3996,
-                    trade_points_json=[],
-                    trade_points_count=0,
-                    last_imported_at=now,
-                ),
-                ImportedPortfolioPositionDB(
-                    id=uuid4().hex,
-                    user_id=user_id,
-                    source="manual",
-                    symbol="300750.SZ",
-                    security_name="宁德时代",
-                    current_position=200.0,
-                    available_position=180.0,
-                    average_cost=205.5,
-                    market_value=41100.0,
-                    current_position_pct=4.6004,
-                    trade_points_json=[],
-                    trade_points_count=0,
-                    last_imported_at=now,
-                ),
-            ])
+            db.add_all(
+                [
+                    ImportedPortfolioPositionDB(
+                        id=uuid4().hex,
+                        user_id=user_id,
+                        source="manual",
+                        symbol="600519.SH",
+                        security_name="贵州茅台",
+                        current_position=500.0,
+                        available_position=480.0,
+                        average_cost=1700.0,
+                        market_value=850000.0,
+                        current_position_pct=95.3996,
+                        trade_points_json=[],
+                        trade_points_count=0,
+                        last_imported_at=now,
+                    ),
+                    ImportedPortfolioPositionDB(
+                        id=uuid4().hex,
+                        user_id=user_id,
+                        source="manual",
+                        symbol="300750.SZ",
+                        security_name="宁德时代",
+                        current_position=200.0,
+                        available_position=180.0,
+                        average_cost=205.5,
+                        market_value=41100.0,
+                        current_position_pct=4.6004,
+                        trade_points_json=[],
+                        trade_points_count=0,
+                        last_imported_at=now,
+                    ),
+                ]
+            )
             report_service.create_report(
                 db=db,
                 symbol="600519.SH",
@@ -78,10 +80,7 @@ class TestDashboardTrackingApi:
                 user_id=user_id,
                 result_data={
                     "trader_investment_plan": (
-                        "结论：持有\n"
-                        "目标价：1750\n"
-                        "止损价：1650\n"
-                        "最终交易建议：持有，等待放量确认。"
+                        "结论：持有\n目标价：1750\n止损价：1650\n最终交易建议：持有，等待放量确认。"
                     ),
                     "final_trade_decision": "结论：持有\n目标价：1750\n止损价：1650",
                 },

@@ -3,6 +3,7 @@ import re
 import time
 import threading
 import contextvars
+import logging as _logging
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -22,7 +23,8 @@ from ..trade_calendar import cn_market_phase, cn_no_data_reason, cn_today_str, i
 # permit 的持有时间，在超过 STALE_TIMEOUT 后自动回收，防止锁被耗尽。
 
 _is_scheduled_task: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "is_scheduled_task", default=False,
+    "is_scheduled_task",
+    default=False,
 )
 
 
@@ -30,8 +32,6 @@ def set_scheduled_task_context(value: bool = True) -> contextvars.Token:
     """标记当前上下文为定时任务（会通过 asyncio.to_thread 自动传播到工作线程）"""
     return _is_scheduled_task.set(value)
 
-
-import logging as _logging
 
 _lock_logger = _logging.getLogger(__name__)
 
@@ -45,13 +45,13 @@ class _AkshareLock:
     - 僵尸线程最终退出 ``with`` 块时不会 double-release（已被回收）
     """
 
-    ACQUIRE_TIMEOUT = 60   # 等待 slot 的最大秒数
-    STALE_TIMEOUT = 120    # 单次 akshare 调用不应超过 2 分钟，超过视为僵尸
+    ACQUIRE_TIMEOUT = 60  # 等待 slot 的最大秒数
+    STALE_TIMEOUT = 120  # 单次 akshare 调用不应超过 2 分钟，超过视为僵尸
 
     def __init__(self, total: int = 5, scheduled_max: int = 3):
         self._total = threading.Semaphore(total)
         self._scheduled = threading.Semaphore(scheduled_max)
-        self._holders: dict[int, tuple[float, bool]] = {}   # tid -> (mono_time, is_scheduled)
+        self._holders: dict[int, tuple[float, bool]] = {}  # tid -> (mono_time, is_scheduled)
         self._mu = threading.Lock()
 
     # ── 僵尸回收 ──
@@ -61,11 +61,7 @@ class _AkshareLock:
         now = time.monotonic()
         reclaimed = 0
         with self._mu:
-            stale = [
-                (tid, is_sched)
-                for tid, (t, is_sched) in self._holders.items()
-                if now - t > self.STALE_TIMEOUT
-            ]
+            stale = [(tid, is_sched) for tid, (t, is_sched) in self._holders.items() if now - t > self.STALE_TIMEOUT]
             for tid, is_sched in stale:
                 del self._holders[tid]
                 self._total.release()
@@ -125,18 +121,9 @@ class CnAkshareProvider(BaseMarketDataProvider):
     """A-share provider backed by AkShare."""
 
     INDICATOR_DESCRIPTIONS = {
-        "close_50_sma": (
-            "50 日均线（SMA）：中期趋势指标。"
-            "用途：识别趋势方向，并作为动态支撑/阻力参考。"
-        ),
-        "close_200_sma": (
-            "200 日均线（SMA）：长期趋势基准。"
-            "用途：确认大级别趋势，并辅助识别金叉/死叉结构。"
-        ),
-        "close_10_ema": (
-            "10 日指数均线（EMA）：短期响应更快。"
-            "用途：捕捉短线动量变化与潜在入场时机。"
-        ),
+        "close_50_sma": ("50 日均线（SMA）：中期趋势指标。用途：识别趋势方向，并作为动态支撑/阻力参考。"),
+        "close_200_sma": ("200 日均线（SMA）：长期趋势基准。用途：确认大级别趋势，并辅助识别金叉/死叉结构。"),
+        "close_10_ema": ("10 日指数均线（EMA）：短期响应更快。用途：捕捉短线动量变化与潜在入场时机。"),
         "macd": "MACD：趋势与动量综合指标。",
         "macds": "MACD 信号线（Signal）。",
         "macdh": "MACD 柱状图（Histogram）。",
@@ -157,9 +144,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
         try:
             import akshare as ak  # type: ignore
         except ImportError as exc:
-            raise NotImplementedError(
-                "cn_akshare requires 'akshare'. Install it with: pip install akshare"
-            ) from exc
+            raise NotImplementedError("cn_akshare requires 'akshare'. Install it with: pip install akshare") from exc
         return ak
 
     def _locked(self, func, *args, **kwargs):
@@ -170,9 +155,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
         s = symbol.strip().lower()
         m = re.search(r"(\d{6})", s)
         if not m:
-            raise NotImplementedError(
-                f"cn_akshare only supports A-share 6-digit symbols, got: {symbol}"
-            )
+            raise NotImplementedError(f"cn_akshare only supports A-share 6-digit symbols, got: {symbol}")
         return m.group(1)
 
     def _sina_symbol(self, symbol: str) -> str:
@@ -431,9 +414,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
         df = self._fetch_hist_df(symbol, start_date, end_date)
         return self._format_ak_hist(df, symbol, start_date, end_date)
 
-    def get_indicators(
-        self, symbol: str, indicator: str, curr_date: str, look_back_days: int
-    ) -> str:
+    def get_indicators(self, symbol: str, indicator: str, curr_date: str, look_back_days: int) -> str:
         if indicator not in self.INDICATOR_DESCRIPTIONS:
             raise ValueError(
                 f"Indicator {indicator} is not supported. "
@@ -532,10 +513,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
             if len(parts) > 1:
                 return "\n\n".join(parts)
 
-            raise NotImplementedError(
-                "cn_akshare is temporarily unavailable for fundamentals: "
-                + "; ".join(errors)
-            )
+            raise NotImplementedError("cn_akshare is temporarily unavailable for fundamentals: " + "; ".join(errors))
 
     def _financial_report_sina(self, ticker: str, report_name: str) -> str:
         with AKSHARE_CALL_LOCK:
@@ -561,25 +539,17 @@ class CnAkshareProvider(BaseMarketDataProvider):
             except Exception as exc:
                 errors.append(f"stock_financial_abstract_new_ths: {type(exc).__name__}")
 
-            raise NotImplementedError(
-                f"cn_akshare is temporarily unavailable for {report_name}: {'; '.join(errors)}"
-            )
+            raise NotImplementedError(f"cn_akshare is temporarily unavailable for {report_name}: {'; '.join(errors)}")
 
-    def get_balance_sheet(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_balance_sheet(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         table = self._financial_report_sina(ticker, "资产负债表")
         return f"## Balance Sheet ({ticker})\n\n{table}"
 
-    def get_cashflow(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_cashflow(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         table = self._financial_report_sina(ticker, "现金流量表")
         return f"## Cashflow ({ticker})\n\n{table}"
 
-    def get_income_statement(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_income_statement(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         table = self._financial_report_sina(ticker, "利润表")
         return f"## Income Statement ({ticker})\n\n{table}"
 
@@ -617,9 +587,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
                 return f"## {ticker} 新闻（{start_date} 至 {end_date}）：\n\n" + "\n".join(rows)
             except Exception as exc:
-                raise NotImplementedError(
-                    f"cn_akshare is temporarily unavailable for news: {exc}"
-                ) from exc
+                raise NotImplementedError(f"cn_akshare is temporarily unavailable for news: {exc}") from exc
 
     def get_global_news(self, curr_date: str) -> str:
         result = self.get_sina_global_news(page="1", page_size="100", tag_id="1,4,7")
@@ -637,10 +605,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
             with AKSHARE_CALL_LOCK:
                 df = ak.stock_main_stock_holder(stock=code)
             if df is not None and not df.empty:
-                return (
-                    f"## Insider Transactions for {symbol}\n\n"
-                    f"{df.head(20).to_markdown(index=False)}"
-                )
+                return f"## Insider Transactions for {symbol}\n\n{df.head(20).to_markdown(index=False)}"
             errors.append("stock_main_stock_holder: empty dataframe")
         except Exception as exc:
             errors.append(f"stock_main_stock_holder: {type(exc).__name__}")
@@ -652,8 +617,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
             start_date = (end_dt - timedelta(days=14)).strftime("%Y-%m-%d")
             news = self.get_news(symbol, start_date, end_date)
             return (
-                f"## Insider Transactions for {symbol}\n\n"
-                f"未获取到股东交易明细，降级返回近两周公司相关新闻：\n\n{news}"
+                f"## Insider Transactions for {symbol}\n\n未获取到股东交易明细，降级返回近两周公司相关新闻：\n\n{news}"
             )
         except Exception as exc:
             errors.append(f"news_fallback: {type(exc).__name__}")
@@ -696,12 +660,8 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 r = requests.get(url, params=params, timeout=10)
                 data_json = r.json()
 
-                time_list = [
-                    item["create_time"] for item in data_json["result"]["data"]["feed"]["list"]
-                ]
-                text_list = [
-                    item["rich_text"] for item in data_json["result"]["data"]["feed"]["list"]
-                ]
+                time_list = [item["create_time"] for item in data_json["result"]["data"]["feed"]["list"]]
+                text_list = [item["rich_text"] for item in data_json["result"]["data"]["feed"]["list"]]
 
                 if not text_list:
                     return "未获取到新浪财经快讯"
@@ -788,6 +748,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
     def _build_quotes_from_em(self, df: "pd.DataFrame", code_to_original: dict[str, str]) -> str:
         import json
+
         normalized = list(code_to_original.keys())
         df = df[df["代码"].isin(normalized)]
         result: dict[str, dict] = {}
@@ -926,7 +887,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 return f"{symbol} 近期主力资金流向数据暂不可用。"
             df_recent = df.tail(5)
             return f"{symbol} 近5日主力资金净流向：\n{df_recent.to_string(index=False)}"
-        except Exception as exc:
+        except Exception:
             return None
 
     def get_lhb_detail(self, symbol: str, date: str) -> str:
@@ -949,10 +910,10 @@ class CnAkshareProvider(BaseMarketDataProvider):
             if df.empty:
                 return f"{symbol} 在 {date} 无龙虎榜数据（非异动日属正常）。"
             return f"{symbol} 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
-        except TypeError as exc:
+        except TypeError:
             # akshare 当日数据未更新时，data_json["result"] 为 None
             return f"{date} 龙虎榜数据尚未更新（通常发生在盘中查询当日数据）。"
-        except Exception as exc:
+        except Exception:
             return None
 
     def get_zt_pool(self, date: str) -> str:

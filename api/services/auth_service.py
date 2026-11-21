@@ -12,7 +12,6 @@ from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
 import jwt
-from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy.orm import Session
 import logging
 
@@ -146,7 +145,9 @@ def upsert_login_code(db: Session, email: str, purpose: str = "login") -> str:
     return code
 
 
-def verify_login_code(db: Session, email: str, code: str, purpose: str = "login", client_ip: Optional[str] = None) -> Optional[UserDB]:
+def verify_login_code(
+    db: Session, email: str, code: str, purpose: str = "login", client_ip: Optional[str] = None
+) -> Optional[UserDB]:
     email = normalize_email(email)
     now = _utcnow()
     code_row = (
@@ -207,11 +208,11 @@ def send_login_code(email: str, code: str) -> Optional[str]:
     smtp_user = get_env_alias(["MAIL_USER", "MAIL_USERNAME", "SMTP_USER"]).strip()
     smtp_password = get_env_alias(["MAIL_PASS", "MAIL_PASSWORD", "SMTP_PASSWORD"]).strip()
     smtp_from = get_env_alias(["MAIL_FROM", "SMTP_FROM"], smtp_user or "noreply@example.com").strip()
-    
+
     # 兼容旧版的逻辑
     smtp_starttls_str = get_env_alias(["MAIL_STARTTLS", "SMTP_TLS"], "1").strip().lower()
     smtp_starttls = smtp_starttls_str not in ("0", "false", "off", "no")
-    
+
     smtp_ssl_tls_str = get_env_alias(["MAIL_SSL", "MAIL_SSL_TLS"], "0").strip().lower()
     smtp_ssl_tls = smtp_ssl_tls_str in ("1", "true", "on", "yes")
 
@@ -290,6 +291,7 @@ def upsert_user_llm_config(
 
     if default_analysts is not None:
         import json
+
         row.default_analysts = json.dumps(default_analysts)
 
     row.updated_at = now

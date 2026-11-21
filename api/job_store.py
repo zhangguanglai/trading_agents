@@ -3,6 +3,7 @@
 Provides a Protocol defining the interface and an InMemoryJobStore implementation
 that replicates the current module-level _jobs / _job_events behavior in api/main.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -236,9 +237,7 @@ class InMemoryJobStore:
             # on the loop side will pick it up on the next wait_for cycle.
             self._put_with_overflow(q, payload)
 
-    async def subscribe(
-        self, job_id: str, *, poll_interval: float = 8.0
-    ) -> AsyncIterator[Dict[str, Any]]:
+    async def subscribe(self, job_id: str, *, poll_interval: float = 8.0) -> AsyncIterator[Dict[str, Any]]:
         """Async generator yielding events for *job_id*.
 
         On timeout:
@@ -280,9 +279,9 @@ class InMemoryJobStore:
         purged = 0
         with self._lock:
             stale = [
-                jid for jid, data in self._jobs.items()
-                if data.get("status") in ("completed", "failed")
-                and data.get("created_at", "") < now
+                jid
+                for jid, data in self._jobs.items()
+                if data.get("status") in ("completed", "failed") and data.get("created_at", "") < now
             ]
             for jid in stale:
                 self._jobs.pop(jid, None)
@@ -318,10 +317,10 @@ def get_job_store() -> JobStore:
     if redis_url:
         try:
             from api.job_store_redis import RedisJobStore
+
             return RedisJobStore(redis_url)
         except ImportError:
             logger.warning(
-                "REDIS_URL is set but api.job_store_redis is not available; "
-                "falling back to InMemoryJobStore"
+                "REDIS_URL is set but api.job_store_redis is not available; falling back to InMemoryJobStore"
             )
     return InMemoryJobStore()

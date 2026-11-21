@@ -119,7 +119,7 @@ def _extract_decision_keyword(text: str) -> str | None:
                     idx = snippet_upper.find(kw, start)
                     if idx == -1:
                         break
-                    window = snippet_upper[max(0, idx - 6):idx]
+                    window = snippet_upper[max(0, idx - 6) : idx]
                     if not any(neg in window for neg in negation_markers):
                         return True
                     start = idx + 1

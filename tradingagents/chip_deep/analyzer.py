@@ -1,6 +1,5 @@
 """chip-deep 核心分析引擎"""
 
-import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 class ChipDeepAnalyzer:
     """A股筹码深度分析器
-    
+
     基于 Tushare Pro 的 cyq_perf / cyq_chips 数据，
     计算六维评分并生成分析报告。
     """
@@ -50,7 +49,7 @@ class ChipDeepAnalyzer:
 
         # 确保数据按日期正序排列（旧→新），所有后续方法都依赖这个顺序
         perf_df = perf_df.sort_values("trade_date").reset_index(drop=True)
-        
+
         # 切片：只保留最近 lookback_days 个交易日的数据用于分析
         if len(perf_df) > self.lookback_days:
             perf_df = perf_df.tail(self.lookback_days).reset_index(drop=True)
@@ -59,8 +58,10 @@ class ChipDeepAnalyzer:
         # 2. 获取最新交易日（优先使用 daily 接口的最新日期，确保数据一致性）
         latest_date_raw = perf_df["trade_date"].max()
         latest_date = str(latest_date_raw).replace("-", "")
-        logger.info(f"[chip-deep] perf_df 最新日期: {latest_date} (原始: {latest_date_raw}, 类型: {type(latest_date_raw)})")
-        
+        logger.info(
+            f"[chip-deep] perf_df 最新日期: {latest_date} (原始: {latest_date_raw}, 类型: {type(latest_date_raw)})"
+        )
+
         # 尝试获取 daily 数据的最新日期（可能比 cyq_perf 更新）
         daily_latest_date = await self._get_daily_latest_date()
         if daily_latest_date and daily_latest_date > latest_date:
@@ -92,10 +93,10 @@ class ChipDeepAnalyzer:
                         valid_date = candidate_date
                         logger.info(f"[chip-deep] 筹码分布获取成功: date={valid_date}")
                         break
-        
+
         if chips_df is None or chips_df.empty:
             return self._build_error_result("筹码分布数据获取失败", stock_name)
-        
+
         # 更新latest_date为实际有数据的日期
         if valid_date and valid_date != latest_date:
             logger.info(f"[chip-deep] 使用有效日期替代: {valid_date} (原: {latest_date})")
@@ -125,14 +126,11 @@ class ChipDeepAnalyzer:
         """获取股票名称（使用 Tushare stock_basic 接口）"""
         try:
             from tradingagents.dataflows.providers.cn_tushare_provider import CnTushareProvider
+
             provider = CnTushareProvider()
             provider._init_ts()
             ts_code = provider._to_tushare_code(self.symbol)
-            df = provider._call_with_retry(
-                provider._ts.stock_basic,
-                ts_code=ts_code,
-                fields="ts_code,name"
-            )
+            df = provider._call_with_retry(provider._ts.stock_basic, ts_code=ts_code, fields="ts_code,name")
             if df is not None and not df.empty:
                 return str(df.iloc[0].get("name", ""))
         except Exception as e:
@@ -172,12 +170,14 @@ class ChipDeepAnalyzer:
 
         try:
             from tradingagents.dataflows.providers.cn_tushare_provider import CnTushareProvider
+
             provider = CnTushareProvider()
             result = provider.get_stock_data(self.symbol, self.start_date, self.end_date)
             if result is None:
                 return None
-            
+
             import json
+
             if isinstance(result, str):
                 try:
                     data = json.loads(result)
@@ -235,6 +235,7 @@ class ChipDeepAnalyzer:
         try:
             # 直接调用 Tushare provider 获取日线数据
             from tradingagents.dataflows.providers.cn_tushare_provider import CnTushareProvider
+
             provider = CnTushareProvider()
             # trade_date 是 YYYYMMDD 格式，daily 接口需要 YYYY-MM-DD
             if len(trade_date) == 8 and trade_date.isdigit():
@@ -246,6 +247,7 @@ class ChipDeepAnalyzer:
             if result is None:
                 return 0
             import json
+
             if isinstance(result, str):
                 try:
                     data = json.loads(result)
@@ -265,12 +267,13 @@ class ChipDeepAnalyzer:
 
     async def _get_daily_latest_date(self) -> Optional[str]:
         """获取 daily 接口的最新交易日（YYYYMMDD格式）
-        
+
         注意：Tushare 返回的数据是按日期降序排列（最新在前），
         所以取第一条数据即为最新日期。
         """
         try:
             from tradingagents.dataflows.providers.cn_tushare_provider import CnTushareProvider
+
             provider = CnTushareProvider()
             # 获取最近一个交易日的数据
             end_date = datetime.now().strftime("%Y-%m-%d")
@@ -278,6 +281,7 @@ class ChipDeepAnalyzer:
             result = provider.get_stock_data(self.symbol, start_date, end_date)
             if result is not None:
                 import json
+
                 if isinstance(result, str):
                     try:
                         data = json.loads(result)
@@ -313,7 +317,7 @@ class ChipDeepAnalyzer:
 
     def _get_bin_params(self, close: float) -> tuple:
         """根据股价自动选择分箱粒度和搜索范围（技能文档标准）
-        
+
         Returns:
             (step, search_range)
         """
@@ -324,7 +328,14 @@ class ChipDeepAnalyzer:
         else:
             return 5.0, 8.0  # 高价股：5元一格，±8元搜索范围
 
-    def _calc_dim6(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close_price: float = 0, period_cost_rise: dict = None) -> dict:
+    def _calc_dim6(
+        self,
+        perf_df: pd.DataFrame,
+        chips_df: pd.DataFrame,
+        prev_chips_df: Optional[pd.DataFrame],
+        close_price: float = 0,
+        period_cost_rise: dict = None,
+    ) -> dict:
         """六维评分计算（基于量化规则）— 技能文档 v2 加权版（适配多周期）
 
         加权评分体系：
@@ -340,10 +351,14 @@ class ChipDeepAnalyzer:
         # 优先使用 daily 接口获取的收盘价
         close = close_price if close_price > 0 else float(latest.get("weight_avg", 0))
         # 使用筹码峰位成本作为"平均成本"
-        peak_cost = self._calc_peak_cost(chips_df) if chips_df is not None and not chips_df.empty else float(latest.get("weight_avg", 0))
+        peak_cost = (
+            self._calc_peak_cost(chips_df)
+            if chips_df is not None and not chips_df.empty
+            else float(latest.get("weight_avg", 0))
+        )
         weight_avg = peak_cost
         winner_rate = float(latest.get("winner_rate", 0))  # 已经是百分比
-        
+
         # 周期内成本抬升数据（适配30/60/250日）
         if period_cost_rise is None:
             period_cost_rise = self._calc_period_cost_rise(perf_df, str(latest.get("trade_date", "")))
@@ -367,7 +382,7 @@ class ChipDeepAnalyzer:
             thick_threshold = 40  # 中价股
         else:
             thick_threshold = 40  # 高价股
-        
+
         if density > thick_threshold:
             density_score = 1.0
             density_label = "✅"
@@ -387,7 +402,7 @@ class ChipDeepAnalyzer:
         #  获利盘位置（重要维度，基础分 1.0）
         # ⚠ 关键修正：获利盘高低必须结合D1边际变化方向交叉判断（技能文档v2）
         # 单边上涨中高位锁仓≠风险，高位派发才是
-        
+
         if margin_score >= 2.0:
             # === 情况A：筹码猛烈向上/锁仓（主力未出货）===
             if winner_rate > 90:
@@ -414,7 +429,7 @@ class ChipDeepAnalyzer:
                 winner_score = 1.0
                 winner_label = "✅"
                 winner_desc = "砸盘吸筹（猛烈收集，抄底机会）"
-        
+
         elif margin_score <= 0:
             # === 情况B：筹码峰在下降（主力可能出货或无人接盘）===
             if winner_rate > 90:
@@ -447,7 +462,7 @@ class ChipDeepAnalyzer:
                     winner_score = 0.0
                     winner_label = "❌"
                     winner_desc = "劣质低胜率（弱势股，不碰）"
-        
+
         else:
             # === 情况C：边际变化微弱（0 < score < 2），使用原规则 ===
             if winner_rate > 90:
@@ -487,7 +502,7 @@ class ChipDeepAnalyzer:
         cost_rise = period_cost_rise.get("cost_rise", 0)
         price_rise = period_cost_rise.get("price_rise", 0)
         cost_rise_type = period_cost_rise.get("type_desc", "未知")
-        
+
         # 规则 4a：成本抬升幅度（按周期动态调整阈值）
         if self.lookback_days <= 30:
             # 30日周期：月度涨幅标准
@@ -554,7 +569,7 @@ class ChipDeepAnalyzer:
                 cost_rise_score = 0.0
                 cost_rise_label = "❌"
                 cost_rise_desc = "底部基本没变"
-        
+
         # 计算比值（成本 vs 股价涨幅比，归一化口径）— 用于显示
         if price_rise != 0:
             cost_pressure_ratio = (1 + cost_rise / 100) / (1 + price_rise / 100)
@@ -585,7 +600,7 @@ class ChipDeepAnalyzer:
                 cost_rise_type = "逆市抬升型"  # 股价跌但成本升
             else:  # cost_rise < 0 and price_rise > 0
                 cost_rise_type = "背离回落型"  # 股价涨但成本降
-        
+
         cost_rise_detail = f"成本抬升{cost_rise:.1f}%，股价涨幅{price_rise:.1f}%，比值{cost_pressure_ratio:.2f}，{cost_rise_type}，{cost_rise_desc}"
 
         # ⑤ 超跌程度（辅助维度，基础分 0.5）
@@ -638,8 +653,8 @@ class ChipDeepAnalyzer:
         return {
             "chip_density": {"score": density_score, "label": density_label, "detail": density_detail},
             "margin_change": {
-                "score": margin_score, 
-                "label": margin_label, 
+                "score": margin_score,
+                "label": margin_label,
                 "detail": margin_detail,
                 "panic_exit": panic_exit,  # 技能文档 v2：恐慌出逃标志
             },
@@ -648,7 +663,11 @@ class ChipDeepAnalyzer:
             "overshoot": {"score": overshoot_score, "label": overshoot_label, "detail": overshoot_detail},
             "support_level": {"score": support_score, "label": support_label, "detail": support_detail},
             "total": total,
-            "margin_direction_type": "active_buy" if margin_score >= 2.0 else "mild_up" if margin_score >= 0.5 else "no_support",  # 用于核心洞察
+            "margin_direction_type": "active_buy"
+            if margin_score >= 2.0
+            else "mild_up"
+            if margin_score >= 0.5
+            else "no_support",  # 用于核心洞察
         }
 
     def _calc_peak_cost(self, chips_df: pd.DataFrame) -> float:
@@ -669,74 +688,78 @@ class ChipDeepAnalyzer:
                 best_density = density
                 # 使用该区间的加权平均价格作为峰位成本
                 subset = chips_df.loc[mask]
-                best_center = (subset["price"] * subset["percent"]).sum() / subset["percent"].sum() if subset["percent"].sum() > 0 else price
+                best_center = (
+                    (subset["price"] * subset["percent"]).sum() / subset["percent"].sum()
+                    if subset["percent"].sum() > 0
+                    else price
+                )
         return best_center
 
     def _calc_chip_density_v2(self, chips_df: pd.DataFrame, close: float) -> tuple[float, bool]:
         """计算当前价附近固定区间的筹码占比（基于量化规则）
-        
+
         技能文档标准：
         - 股价 < 20元: 搜索范围 ±1.5元
         - 股价 20~100元: 搜索范围 ±3.0元
         - 股价 > 100元: 搜索范围 ±8.0元
-        
+
         Returns:
             (density, vacuum_risk): 筹码占比和真空悬崖风险
         """
         if chips_df is None or chips_df.empty:
             return 0, False
-        
+
         # 使用技能文档标准搜索范围
         step, search_range = self._get_bin_params(close)
-        
+
         # 计算当前价附近区间筹码占比
         low, high = close - search_range, close + search_range
         mask = (chips_df["price"] >= low) & (chips_df["price"] <= high)
         density = chips_df.loc[mask, "percent"].sum() if mask.any() else 0
-        
+
         # 真空悬崖判断：当前价下方1个分箱粒度内筹码 < 5%
         below_1bin_mask = (chips_df["price"] >= close - step) & (chips_df["price"] < close)
         below_1bin = chips_df.loc[below_1bin_mask, "percent"].sum() if below_1bin_mask.any() else 0
         vacuum_risk = below_1bin < 5
-        
+
         return density, vacuum_risk
 
     def _get_price_bins(self, chips_df: pd.DataFrame, close: float) -> np.ndarray:
         """生成价格分箱边界（np.arange 标准）
-        
+
         分箱边界规则：
         - 从最低价向下取整到分箱粒度边界
         - 到最高价向上取整到分箱粒度边界
         - 左闭右开 [bin_start, bin_end)
-        
+
         示例：股价 43.19, step=2.0
         - price_min 向下取整 → 40, price_max 向上取整 → 50
         - bins = [40, 42, 44, 46, 48, 50]
         - 43.19 ∈ [42, 44)
-        
+
         Returns:
             bins: 分箱边界数组
         """
         step, _ = self._get_bin_params(close)
-        
+
         price_min = chips_df["price"].min()
         price_max = chips_df["price"].max()
-        
+
         # 从最低价向下取整到分箱边界
         bin_start = np.floor(price_min / step) * step
         # 到最高价向上取整到分箱边界
         bin_end = np.ceil(price_max / step) * step + step  # +step 确保包含最大值
-        
+
         bins = np.arange(bin_start, bin_end, step)
         return bins
-    
+
     def _aggregate_to_bins(self, chips_df: pd.DataFrame, bins: np.ndarray) -> np.ndarray:
         """将筹码分布聚合到分箱
-        
+
         Args:
             chips_df: 筹码分布数据
             bins: 分箱边界
-            
+
         Returns:
             每个分箱的筹码占比数组
         """
@@ -748,33 +771,35 @@ class ChipDeepAnalyzer:
             if 0 <= idx < len(binned):
                 binned[idx] += pc
         return binned
-    
+
     def _get_current_bin(self, chips_df: pd.DataFrame, close: float) -> tuple[float, float]:
         """获取当前价所在分箱的区间范围（np.digitize 标准）
-        
+
         归属规则：np.digitize(p, bins, right=False) - 1
         - 左闭右开 [bin_start, bin_end)
         - 42.00 ∈ [42, 44) ✅
         - 43.19 ∈ [42, 44) ✅
         - 44.00 ∈ [44, 46) ❌（右边界不包含，归入下一个箱）
-        
+
         Returns:
             (bin_low, bin_high): 当前价所在分箱的上下界
         """
         bins = self._get_price_bins(chips_df, close)
-        
+
         # np.digitize 返回的是 bins 中的索引（1-based）
         idx = np.digitize(close, bins, right=False) - 1
-        
+
         # 确保索引在有效范围内
         idx = max(0, min(idx, len(bins) - 2))
-        
+
         bin_low = float(bins[idx])
         bin_high = float(bins[idx + 1])
-        
+
         return bin_low, bin_high
 
-    def _calc_margin_change_v2(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float) -> tuple[float, str, str, bool]:
+    def _calc_margin_change_v2(
+        self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float
+    ) -> tuple[float, str, str, bool]:
         """计算边际变化（技能文档 v2 双轨制 + 重心位移 v3）
 
         v3 新增：
@@ -854,7 +879,12 @@ class ChipDeepAnalyzer:
         #    不应误判为"派发"，应当识别为健康的洗盘行为
         if center_shift_pct > 5 and chg < 0 and abs(chg) < 5:
             shift_desc = f"重心+{center_shift_pct:.1f}%"
-            return 1.0, "✅", f"[{bin_start:.0f},{bin_end:.0f}){chg:+.1f}% {direction}（{source}，{shift_desc}洗盘后锁仓）", False
+            return (
+                1.0,
+                "✅",
+                f"[{bin_start:.0f},{bin_end:.0f}){chg:+.1f}% {direction}（{source}，{shift_desc}洗盘后锁仓）",
+                False,
+            )
 
         # 1. 猛烈向上
         if chg > 10:
@@ -888,31 +918,30 @@ class ChipDeepAnalyzer:
 
     def _is_quality_low_winner(self, perf_df: pd.DataFrame, close: float, period_cost_rise: dict = None) -> bool:
         """判断是否为优质低胜率（基于量化规则，适配多周期）
-        
+
         技能文档标准（紫金矿业型）：
         - 年度涨幅 > 25%
         - 筹码换手完成度 > 90%
         - 成本抬升幅度 > 15%
-        
+
         30日周期适配：使用年化收益率替代年度涨幅，月度换手替代年度换手
         """
         if len(perf_df) < 2:
             return False
-        
+
         # 获取周期内成本抬升数据
         if period_cost_rise is None:
             latest_date = str(perf_df.iloc[-1].get("trade_date", ""))
             period_cost_rise = self._calc_period_cost_rise(perf_df, latest_date)
-        
+
         annual_return = period_cost_rise.get("annual_return", 0)
         cost_rise = period_cost_rise.get("cost_rise", 0)
-        period_days = period_cost_rise.get("period_days", 30)
-        
+
         # 筹码换手完成度（用 winner_rate 变化幅度近似）
         start_winner = float(perf_df.iloc[0].get("winner_rate", 0))
         end_winner = float(perf_df.iloc[-1].get("winner_rate", 0))
         chip_turnover = abs(end_winner - start_winner)
-        
+
         # 按周期动态调整阈值
         if self.lookback_days <= 30:
             # 30日周期：月度标准（年化25% ≈ 月度2%，放宽到5%）
@@ -928,32 +957,32 @@ class ChipDeepAnalyzer:
 
     def _calc_cost_rise_v2(self, perf_df: pd.DataFrame, close: float) -> tuple[float, float, str]:
         """计算250日成本抬升并对比股价涨幅（基于量化规则）
-        
+
         Returns:
             (cost_rise, price_rise, type_desc): 成本抬升、股价涨幅、类型描述
         """
         if len(perf_df) < 2:
             return 0, 0, "数据不足"
-        
+
         # 按日期排序确保正确的时间顺序
         df_sorted = perf_df.sort_values("trade_date")
-        
+
         # 期初和期末数据
         start_avg = float(df_sorted.iloc[0].get("weight_avg", 0))
         end_avg = float(df_sorted.iloc[-1].get("weight_avg", 0))
-        
+
         # 成本抬升幅度
         if start_avg > 0:
             cost_rise = (end_avg - start_avg) / start_avg * 100
         else:
             cost_rise = 0
-        
+
         # 股价涨幅（使用当前收盘价 vs 期初weight_avg作为近似）
         if start_avg > 0:
             price_rise = (close - start_avg) / start_avg * 100
         else:
             price_rise = 0
-        
+
         # 判断类型
         # cost_rise > price_rise: 主力成本抬升快于股价 → 主力在吸筹
         # cost_rise < price_rise: 股价涨速快于成本 → 散户追高
@@ -965,43 +994,44 @@ class ChipDeepAnalyzer:
             type_desc = "底部抬升型"
         else:
             type_desc = "追高套牢型"
-        
+
         return cost_rise, price_rise, type_desc
 
     def _calc_period_cost_rise(self, perf_df: pd.DataFrame, latest_date: str) -> dict:
         """计算周期内成本抬升（适配30/60/250日不同周期）
-        
+
         根据 lookback_days 动态调整判断标准：
         - 30日周期：周期涨幅作为"月度涨幅"，判断优质低胜率
         - 60日/250日：维持原有年度涨幅标准
-        
+
         Returns:
             dict: {cost_rise, price_rise, type_desc, period_return, period_days}
         """
         if len(perf_df) < 2:
             return {"cost_rise": 0, "price_rise": 0, "type_desc": "数据不足", "period_return": 0, "period_days": 0}
-        
+
         # 按日期排序
         df_sorted = perf_df.sort_values("trade_date")
-        
+
         # 取周期起止数据
         start_avg = float(df_sorted.iloc[0].get("weight_avg", 0))
         end_avg = float(df_sorted.iloc[-1].get("weight_avg", 0))
         start_date = df_sorted.iloc[0]["trade_date"]
         end_date = df_sorted.iloc[-1]["trade_date"]
-        
+
         # 计算日历天数
         from datetime import datetime as dt
+
         try:
             start_dt = dt.strptime(str(start_date), "%Y%m%d")
             end_dt = dt.strptime(str(end_date), "%Y%m%d")
             period_days = (end_dt - start_dt).days
         except (ValueError, TypeError):
             period_days = len(df_sorted)
-        
+
         # 成本抬升幅度
         cost_rise = ((end_avg - start_avg) / start_avg * 100) if start_avg > 0 else 0
-        
+
         # 周期收益率（年化）
         start_close = 0.0
         end_close = 0.0
@@ -1019,13 +1049,13 @@ class ChipDeepAnalyzer:
         else:
             total_return = 0
             annual_return = 0
-        
+
         # 股价涨幅（使用期初/期末收盘价计算，与成本抬升对比）
         if start_close > 0:
             price_rise = total_return
         else:
             price_rise = cost_rise
-        
+
         # 类型判断：成本涨幅 vs 股价涨幅
         diff = cost_rise - price_rise
         if abs(diff) <= 10:
@@ -1034,7 +1064,7 @@ class ChipDeepAnalyzer:
             type_desc = "底部抬升型"
         else:
             type_desc = "追高套牢型"
-        
+
         return {
             "cost_rise": cost_rise,
             "price_rise": price_rise,
@@ -1046,24 +1076,24 @@ class ChipDeepAnalyzer:
 
     def _calc_support_levels_v2(self, chips_df: pd.DataFrame, close: float) -> List[dict]:
         """计算多层支撑位（基于量化规则）
-        
+
         支撑位定义：从当前价向下，筹码密集的价格区间。
         这些位置有较多持仓者，下跌时可能产生承接。
-        
+
         Returns:
             List[dict]: 支撑层级列表，每个包含价格和跌幅
         """
         if chips_df is None or chips_df.empty:
             return []
-        
+
         # 筛选当前价下方的筹码，按价格降序排列（从高到低）
         df_below = chips_df[chips_df["price"] <= close].sort_values("price", ascending=False)
         if df_below.empty:
             return []
-        
+
         # 从当前价向下累计筹码
         cum = df_below["percent"].cumsum()
-        
+
         support_levels = []
         for pct_target in [5, 10, 15, 20]:
             mask = cum >= pct_target
@@ -1071,12 +1101,8 @@ class ChipDeepAnalyzer:
                 # 取最后一个满足条件的价格（离当前价最近的支撑位）
                 support_price = df_below[mask]["price"].iloc[-1]
                 drop_pct = (1 - support_price / close) * 100
-                support_levels.append({
-                    "pct": pct_target,
-                    "price": support_price,
-                    "drop": drop_pct
-                })
-        
+                support_levels.append({"pct": pct_target, "price": support_price, "drop": drop_pct})
+
         return support_levels
 
     # 旧方法已废弃，保留以下方法用于兼容性
@@ -1090,9 +1116,9 @@ class ChipDeepAnalyzer:
 
     def _calc_base_rating(self, total: float) -> int:
         """计算基础评级（加权评分与评级映射）— 技能文档 v2 标准
-        
+
         加权总分范围：0 ~ 5.5
-        
+
         映射关系：
         - ≥ 5.0 → ⭐⭐⭐⭐⭐ (5星) 最强底部信号
         - ≥ 4.0 → ⭐⭐⭐⭐ (4星) 高度指向底部
@@ -1113,26 +1139,32 @@ class ChipDeepAnalyzer:
 
     def _check_panic_exit(self, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], close: float) -> bool:
         """检查是否恐慌出逃（技能文档否决项）
-        
+
         触发条件：上方减>15% + 下方增>10%
         """
         if prev_chips_df is None or prev_chips_df.empty or chips_df is None or chips_df.empty:
             return False
-        
+
         # 上方：当前价以上区间
         above_curr = chips_df[chips_df["price"] > close]["percent"].sum()
         above_prev = prev_chips_df[prev_chips_df["price"] > close]["percent"].sum()
         above_change = above_curr - above_prev
-        
+
         # 下方：当前价以下区间
         below_curr = chips_df[chips_df["price"] <= close]["percent"].sum()
         below_prev = prev_chips_df[prev_chips_df["price"] <= close]["percent"].sum()
         below_change = below_curr - below_prev
-        
+
         # 恐慌出逃：上方大幅减少(>15%) + 下方增加(>10%)
         return above_change < -15 and below_change > 10
 
-    def _apply_veto_rules(self, dim6: dict, chips_df: Optional[pd.DataFrame] = None, prev_chips_df: Optional[pd.DataFrame] = None, close: float = 0) -> tuple[int, str]:
+    def _apply_veto_rules(
+        self,
+        dim6: dict,
+        chips_df: Optional[pd.DataFrame] = None,
+        prev_chips_df: Optional[pd.DataFrame] = None,
+        close: float = 0,
+    ) -> tuple[int, str]:
         """应用否决项规则（基于量化规则）— 技能文档 v2 修正版
 
         否决项设计原则：
@@ -1168,11 +1200,24 @@ class ChipDeepAnalyzer:
 
         return 5, ""  # 无否决项
 
-    def _build_result(self, perf_df: pd.DataFrame, chips_df: pd.DataFrame, prev_chips_df: Optional[pd.DataFrame], dim6: dict, close_price: float = 0, stock_name: str = "", latest_date: str = "") -> ChipDeepResult:
+    def _build_result(
+        self,
+        perf_df: pd.DataFrame,
+        chips_df: pd.DataFrame,
+        prev_chips_df: Optional[pd.DataFrame],
+        dim6: dict,
+        close_price: float = 0,
+        stock_name: str = "",
+        latest_date: str = "",
+    ) -> ChipDeepResult:
         """构建完整分析结果"""
         latest = perf_df.iloc[-1]
         # 使用筹码峰位成本作为平均成本，而不是 weight_avg（历史加权平均会被低价筹码拉低）
-        peak_cost = self._calc_peak_cost(chips_df) if chips_df is not None and not chips_df.empty else float(latest.get("weight_avg", 0))
+        peak_cost = (
+            self._calc_peak_cost(chips_df)
+            if chips_df is not None and not chips_df.empty
+            else float(latest.get("weight_avg", 0))
+        )
         weight_avg = peak_cost
         close = close_price if close_price > 0 else weight_avg
         winner_rate = float(latest.get("winner_rate", 0))
@@ -1188,18 +1233,20 @@ class ChipDeepAnalyzer:
             grouped = chips_df.groupby(bins)["percent"].sum()
             for interval, pct in grouped.items():
                 if pct > 0:
-                    chip_dist.append(ChipDistributionItem(
-                        price_low=round(interval.left, 2),
-                        price_high=round(interval.right, 2),
-                        percent=round(pct, 2),
-                    ))
+                    chip_dist.append(
+                        ChipDistributionItem(
+                            price_low=round(interval.left, 2),
+                            price_high=round(interval.right, 2),
+                            percent=round(pct, 2),
+                        )
+                    )
 
         # 边际变化数据（使用统一分箱标准）
         margin_change = []
         if prev_chips_df is not None and not prev_chips_df.empty and chips_df is not None and not chips_df.empty:
             # 使用与 _calc_margin_change_v2 相同的分箱标准
             bins = self._get_price_bins(chips_df, close)
-            
+
             # 按分箱聚合筹码数据
             def _aggregate_by_bins(df: pd.DataFrame, bins: np.ndarray) -> dict:
                 """将筹码数据按分箱聚合"""
@@ -1210,23 +1257,25 @@ class ChipDeepAnalyzer:
                     pct = df.loc[mask, "percent"].sum() if mask.any() else 0
                     result[(float(bin_low), float(bin_high))] = pct
                 return result
-            
+
             curr_by_bin = _aggregate_by_bins(chips_df, bins)
             prev_by_bin = _aggregate_by_bins(prev_chips_df, bins)
-            
+
             # 计算每个分箱的变化
             for (bin_low, bin_high), curr_pct in curr_by_bin.items():
                 prev_pct = prev_by_bin.get((bin_low, bin_high), 0)
                 change = curr_pct - prev_pct
                 if abs(change) > 0.5:  # 只记录显著变化（阈值放宽到0.5）
-                    margin_change.append(MarginChangeItem(
-                        price_low=round(bin_low, 2),
-                        price_high=round(bin_high, 2),
-                        prev_pct=round(prev_pct, 2),
-                        curr_pct=round(curr_pct, 2),
-                        change=round(change, 2),
-                    ))
-            
+                    margin_change.append(
+                        MarginChangeItem(
+                            price_low=round(bin_low, 2),
+                            price_high=round(bin_high, 2),
+                            prev_pct=round(prev_pct, 2),
+                            curr_pct=round(curr_pct, 2),
+                            change=round(change, 2),
+                        )
+                    )
+
             # 按变化幅度排序，取前5
             margin_change = sorted(margin_change, key=lambda x: abs(x.change), reverse=True)[:5]
 
@@ -1234,18 +1283,20 @@ class ChipDeepAnalyzer:
         max_rating, veto_reason = self._apply_veto_rules(dim6, chips_df, prev_chips_df, close)
         base_rating = self._calc_base_rating(dim6["total"])
         rating = min(base_rating, max_rating)
-        
-
 
         # 总结文字
         summary = self._generate_summary(close, weight_avg, winner_rate, dim6, chips_df, prev_chips_df)
-        
+
         # 详细总结（参考范例格式）
-        detailed_summary = self._generate_detailed_summary(close, weight_avg, winner_rate, dim6, perf_df, chips_df, margin_change, prev_chips_df)
-        
+        detailed_summary = self._generate_detailed_summary(
+            close, weight_avg, winner_rate, dim6, perf_df, chips_df, margin_change, prev_chips_df
+        )
+
         # 核心洞察
-        core_insights = self._generate_core_insights(close, weight_avg, winner_rate, dim6, perf_df, chips_df, margin_change)
-        
+        core_insights = self._generate_core_insights(
+            close, weight_avg, winner_rate, dim6, perf_df, chips_df, margin_change
+        )
+
         # 价格阶段
         price_stages = self._calc_price_stages(perf_df)
 
@@ -1286,7 +1337,7 @@ class ChipDeepAnalyzer:
 
     def _format_date(self, date_str: str) -> str:
         """将日期格式统一转换为 YYYY-MM-DD
-        
+
         支持输入格式:
         - YYYYMMDD (如 20250602)
         - YYYY-MM-DD (如 2025-06-02)
@@ -1294,79 +1345,85 @@ class ChipDeepAnalyzer:
         """
         if not date_str or date_str == "nan":
             return ""
-        
+
         date_str = str(date_str).strip()
-        
+
         # 已经是 YYYY-MM-DD 格式
-        if len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-':
+        if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
             return date_str
-        
+
         # YYYY/MM/DD 格式
-        if len(date_str) == 10 and date_str[4] == '/' and date_str[7] == '/':
-            return date_str.replace('/', '-')
-        
+        if len(date_str) == 10 and date_str[4] == "/" and date_str[7] == "/":
+            return date_str.replace("/", "-")
+
         # YYYYMMDD 格式
         if len(date_str) == 8 and date_str.isdigit():
             return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-        
+
         return date_str
 
     def _calc_price_stages(self, perf_df: pd.DataFrame) -> List[PriceStage]:
         """计算价格走势阶段（大涨、回调等）
-        
+
         注意：perf_df 已由 analyze() 方法按 trade_date 正序排列（旧→新）
         """
         if len(perf_df) < 30:
             return []
-        
+
         stages = []
-        
+
         # 使用 weight_avg 作为价格（cyq_perf 没有 close 列）
         price_col = "close" if "close" in perf_df.columns else "weight_avg"
-        
+
         # 找到最高点的索引（在正序数据中）
         max_idx = perf_df[price_col].idxmax()
-        
+
         # 阶段1：从起点到最高点（大涨）
         start_price = float(perf_df.iloc[0].get(price_col, 0))
         max_price = float(perf_df.loc[max_idx].get(price_col, 0))
         max_date = self._format_date(str(perf_df.loc[max_idx].get("trade_date", "")))
         start_date = self._format_date(str(perf_df.iloc[0].get("trade_date", "")))
-        
+
         # 确保最高点不在最开始（至少有30天涨幅才认为是"大涨"阶段）
         if max_idx >= 30 and max_price > start_price * 1.2:  # 涨幅超过20%
-            stages.append(PriceStage(
-                name="大涨",
-                start_date=start_date,
-                end_date=max_date,
-                start_price=round(start_price, 2),
-                end_price=round(max_price, 2),
-                change_pct=round((max_price - start_price) / start_price * 100, 1),
-                winner_rate_start=float(perf_df.iloc[0].get("winner_rate", 0)),
-                winner_rate_end=float(perf_df.loc[max_idx].get("winner_rate", 0)),
-            ))
-        
+            stages.append(
+                PriceStage(
+                    name="大涨",
+                    start_date=start_date,
+                    end_date=max_date,
+                    start_price=round(start_price, 2),
+                    end_price=round(max_price, 2),
+                    change_pct=round((max_price - start_price) / start_price * 100, 1),
+                    winner_rate_start=float(perf_df.iloc[0].get("winner_rate", 0)),
+                    winner_rate_end=float(perf_df.loc[max_idx].get("winner_rate", 0)),
+                )
+            )
+
         # 阶段2：从最高点到最新（回调）
         latest = perf_df.iloc[-1]
         latest_price = float(latest.get(price_col, 0))
         latest_date = self._format_date(str(latest.get("trade_date", "")))
-        
+
         # 确保最新日期在最高点之后，且回调超过10%
         if max_idx < len(perf_df) - 1 and latest_price < max_price * 0.9:
-            stages.append(PriceStage(
-                name="深度回调",
-                start_date=max_date,
-                end_date=latest_date,
-                start_price=round(max_price, 2),
-                end_price=round(latest_price, 2),
-                change_pct=round((latest_price - max_price) / max_price * 100, 1),
-                winner_rate_start=float(perf_df.loc[max_idx].get("winner_rate", 0)),
-                winner_rate_end=float(latest.get("winner_rate", 0)),
-            ))
-        
+            stages.append(
+                PriceStage(
+                    name="深度回调",
+                    start_date=max_date,
+                    end_date=latest_date,
+                    start_price=round(max_price, 2),
+                    end_price=round(latest_price, 2),
+                    change_pct=round((latest_price - max_price) / max_price * 100, 1),
+                    winner_rate_start=float(perf_df.loc[max_idx].get("winner_rate", 0)),
+                    winner_rate_end=float(latest.get("winner_rate", 0)),
+                )
+            )
+
         return stages
 
-    def _generate_one_liner(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, total: float, price_diff: float) -> str:
+    def _generate_one_liner(
+        self, close: float, weight_avg: float, winner_rate: float, dim6: dict, total: float, price_diff: float
+    ) -> str:
         """生成一句话总结（参考范例格式）
 
         范例：
@@ -1379,7 +1436,7 @@ class ChipDeepAnalyzer:
         base_rating = self._calc_base_rating(total)
         rating = min(base_rating, max_rating)
         stars = "⭐" * rating
-        
+
         # 评级定性（使用最终 rating，而非 max_rating）
         if rating >= 4:
             stance = "积极看多"
@@ -1389,7 +1446,7 @@ class ChipDeepAnalyzer:
             stance = "中性偏观望"
         else:
             stance = "建议回避"
-        
+
         # 获利盘定性
         if winner_rate < 20:
             winner_qual = "偏冷（恐慌）"
@@ -1401,7 +1458,7 @@ class ChipDeepAnalyzer:
             winner_qual = "偏高"
         else:
             winner_qual = "过热"
-        
+
         # 价格位置定性
         if abs(price_diff) < 3:
             price_qual = f"几乎精确贴合成本 {weight_avg:.2f}（{price_diff:+.1f}%）"
@@ -1409,14 +1466,14 @@ class ChipDeepAnalyzer:
             price_qual = f"低于成本 {weight_avg:.2f}（{price_diff:+.1f}%）"
         else:
             price_qual = f"高于成本 {weight_avg:.2f}（{price_diff:+.1f}%）"
-        
+
         # 下方支撑（厚垫子）
         support_score = dim6["support_level"]["score"]
         if support_score >= 0.5:
             support_desc = f"下方有 {int(support_score * 8)} 层支撑"
         else:
             support_desc = "下方支撑薄弱"
-        
+
         # 边际变化
         margin_score = dim6["margin_change"]["score"]
         margin_detail = dim6["margin_change"]["detail"]
@@ -1426,7 +1483,7 @@ class ChipDeepAnalyzer:
             margin_desc = f"边际变化温和（{margin_detail}，{margin_score}分）"
         else:
             margin_desc = f"边际变化不足（{margin_detail}，{margin_score}分）"
-        
+
         # 成本抬升
         cost_rise_score = dim6["cost_rise"]["score"]
         cost_rise_detail = dim6["cost_rise"]["detail"]
@@ -1434,11 +1491,11 @@ class ChipDeepAnalyzer:
             cost_desc = f"成本抬升明显（{cost_rise_detail}）"
         else:
             cost_desc = f"成本抬升有限（{cost_rise_detail}）"
-        
+
         # 组装一句话总结
         parts = []
         parts.append(f"{stars} {stance}。")
-        
+
         # 正面因素（持有/买入理由）
         positives = []
         if 40 <= winner_rate < 60:
@@ -1447,7 +1504,7 @@ class ChipDeepAnalyzer:
             positives.append(price_qual)
         if support_score >= 0.5:
             positives.append(support_desc)
-        
+
         if positives:
             parts.append(f"{'、'.join(positives)}——这些是{'持有' if rating >= 3 else '关注'}理由。")
 
@@ -1474,10 +1531,18 @@ class ChipDeepAnalyzer:
             parts.append("建议观望，等待筹码结构改善或价格回调至成本区附近再考虑。")
         else:
             parts.append("当前风险大于机会，建议回避或减仓。")
-        
+
         return "".join(parts)
 
-    def _generate_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, chips_df: Optional[pd.DataFrame] = None, prev_chips_df: Optional[pd.DataFrame] = None) -> str:
+    def _generate_summary(
+        self,
+        close: float,
+        weight_avg: float,
+        winner_rate: float,
+        dim6: dict,
+        chips_df: Optional[pd.DataFrame] = None,
+        prev_chips_df: Optional[pd.DataFrame] = None,
+    ) -> str:
         """生成分析总结（参考范例格式）"""
         total = dim6["total"]
         # 应用与 _build_result 相同的计算逻辑，确保一致性
@@ -1589,20 +1654,29 @@ class ChipDeepAnalyzer:
             "v_recovery_pct": v_recovery_pct,
         }
 
-    def _generate_core_insights(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, perf_df: pd.DataFrame, chips_df: pd.DataFrame, margin_change: List[MarginChangeItem]) -> List[CoreInsight]:
+    def _generate_core_insights(
+        self,
+        close: float,
+        weight_avg: float,
+        winner_rate: float,
+        dim6: dict,
+        perf_df: pd.DataFrame,
+        chips_df: pd.DataFrame,
+        margin_change: List[MarginChangeItem],
+    ) -> List[CoreInsight]:
         """生成核心洞察列表 — 资深投资专家视角，提供可操作的建仓/加仓/止盈/止损建议"""
         insights = []
         price_diff = ((close - weight_avg) / weight_avg * 100) if weight_avg else 0
         total = dim6["total"]
         rating = min(self._calc_base_rating(total), self._apply_veto_rules(dim6, chips_df, None, close)[0])
-        
+
         # 默认价位（fallback）
         stop_loss = close * 0.93
         take_profit = close * 1.15
         strongest_support = close * 0.95
         first_resistance = close * 1.10
         main_cost = weight_avg if weight_avg else close
-        
+
         # 提取筹码分布的关键价位
         key_levels = {}
         if chips_df is not None and not chips_df.empty:
@@ -1610,48 +1684,44 @@ class ChipDeepAnalyzer:
             top_zone = chips_sorted.iloc[0]
             key_levels["main_cost"] = top_zone["price"]
             key_levels["main_cost_pct"] = top_zone["percent"]
-            
+
             # 计算前3大筹码密集区作为支撑位
             support_zones = []
             for _, row in chips_sorted.head(3).iterrows():
                 if row["price"] <= close:  # 只取当前价下方的筹码峰
                     support_zones.append((row["price"], row["percent"]))
             key_levels["supports"] = support_zones
-            
+
             # 上方压力区（当前价上方的筹码峰）
             resistance_zones = []
             for _, row in chips_sorted.head(5).iterrows():
                 if row["price"] > close:
                     resistance_zones.append((row["price"], row["percent"]))
             key_levels["resistances"] = resistance_zones
-        
+
         # ========== 模块1：一句话总览 ==========
         one_liner = self._generate_one_liner(close, weight_avg, winner_rate, dim6, total, price_diff)
-        insights.append(CoreInsight(
-            title="一句话总结",
-            content=one_liner,
-            level="info"
-        ))
-        
+        insights.append(CoreInsight(title="一句话总结", content=one_liner, level="info"))
+
         # ========== 模块2：关键价位（支撑/压力/止损/止盈） ==========
         if key_levels.get("main_cost"):
             main_cost = key_levels["main_cost"]
             supports = key_levels.get("supports", [])
             resistances = key_levels.get("resistances", [])
-            
+
             # 计算具体操作价位
             if supports:
                 strongest_support = max(supports, key=lambda x: x[1])[0]  # 筹码最多的支撑位
                 stop_loss = strongest_support * 0.93  # 支撑位下方 7%
             else:
                 stop_loss = main_cost * 0.93
-            
+
             if resistances:
                 first_resistance = min(resistances, key=lambda x: x[0])[0]  # 最近的上方压力
                 take_profit = first_resistance * 1.02  # 压力位上方 2%
             else:
                 take_profit = close * 1.15  # 无明确压力时给 15% 目标
-            
+
             # 构建价位信息
             level_parts = []
             level_parts.append(f"主力成本 {main_cost:.2f}")
@@ -1661,13 +1731,9 @@ class ChipDeepAnalyzer:
                 level_parts.append(f"首压力 {first_resistance:.2f}")
             level_parts.append(f"建议止损 {stop_loss:.2f}")
             level_parts.append(f"建议止盈 {take_profit:.2f}")
-            
-            insights.append(CoreInsight(
-                title="关键价位",
-                content=" | ".join(level_parts),
-                level="info"
-            ))
-        
+
+            insights.append(CoreInsight(title="关键价位", content=" | ".join(level_parts), level="info"))
+
         # ========== 模块 2.5：洗盘日专项分析（v3 新增）==========
         # 识别周期内最具洗盘特征的日子，验证"主力借恐慌吸筹"的市场行为
         daily_df = None
@@ -1697,156 +1763,191 @@ class ChipDeepAnalyzer:
                     f"3 日内加权成本修复 {wash['recovery_pct']:+.1f}%。"
                     f"洗盘后筹码结构进一步集中。"
                 )
-            insights.append(CoreInsight(
-                title=title,
-                content=content,
-                level="info"
-            ))
+            insights.append(CoreInsight(title=title, content=content, level="info"))
 
         # ========== 模块3：主力意图研判（深度分析）==========
         # 使用dim6的winner_position判定结果（已含D1交叉修正），不再独立判断
-        winner_score = dim6["winner_position"]["score"]
-        winner_label = dim6["winner_position"]["label"]
         winner_desc = dim6["winner_position"].get("detail", "")
         density_score = dim6["chip_density"]["score"]
-        margin_score = dim6["margin_change"]["score"]
-        
+
         # D1交叉修正后的获利盘判定直接用于洞察
         if "高位锁仓" in winner_desc or "拉升中" in winner_desc:
-            insights.append(CoreInsight(
-                title="✅ 高位锁仓 — 拉升中可持有",
-                content=f"获利盘 {winner_rate:.1f}%，结合筹码峰向上移动确认主力未出货，属于拉升中的健康锁仓。"
-                        f"建议：已有仓位者可持有，关注 {take_profit:.2f} 附近的压力；无仓位者不建议追高，等待回调至 {strongest_support:.2f} 附近再考虑。",
-                level="success"
-            ))
+            insights.append(
+                CoreInsight(
+                    title="✅ 高位锁仓 — 拉升中可持有",
+                    content=f"获利盘 {winner_rate:.1f}%，结合筹码峰向上移动确认主力未出货，属于拉升中的健康锁仓。"
+                    f"建议：已有仓位者可持有，关注 {take_profit:.2f} 附近的压力；无仓位者不建议追高，等待回调至 {strongest_support:.2f} 附近再考虑。",
+                    level="success",
+                )
+            )
         elif "高位派发" in winner_desc:
-            insights.append(CoreInsight(
-                title="❌ 获利盘极高 — 建议减仓或止盈",
-                content=f"获利盘 {winner_rate:.1f}%，筹码峰在下降确认主力在出货。"
-                        f"建议：已有仓位者建议在 {take_profit:.2f} 附近逢高减仓（至少减仓50%），锁定利润；无仓位者不建议追高。",
-                level="danger"
-            ))
+            insights.append(
+                CoreInsight(
+                    title="❌ 获利盘极高 — 建议减仓或止盈",
+                    content=f"获利盘 {winner_rate:.1f}%，筹码峰在下降确认主力在出货。"
+                    f"建议：已有仓位者建议在 {take_profit:.2f} 附近逢高减仓（至少减仓50%），锁定利润；无仓位者不建议追高。",
+                    level="danger",
+                )
+            )
         elif "砸盘吸筹" in winner_desc:
-            insights.append(CoreInsight(
-                title="🔴 主力砸盘吸筹 — 抄底机会",
-                content=f"获利盘仅 {winner_rate:.1f}%，但筹码峰猛烈向上移动确认主力在收集筹码。"
-                        f"建议：可在 {close:.2f} 附近分批建仓（30%-50%目标仓位），止损设在 {stop_loss:.2f}。",
-                level="success"
-            ))
+            insights.append(
+                CoreInsight(
+                    title="🔴 主力砸盘吸筹 — 抄底机会",
+                    content=f"获利盘仅 {winner_rate:.1f}%，但筹码峰猛烈向上移动确认主力在收集筹码。"
+                    f"建议：可在 {close:.2f} 附近分批建仓（30%-50%目标仓位），止损设在 {stop_loss:.2f}。",
+                    level="success",
+                )
+            )
         elif "过热" in winner_desc or winner_rate > 80:
-            insights.append(CoreInsight(
-                title="⚠ 获利盘偏高 — 注意控制仓位",
-                content=f"获利盘 {winner_rate:.1f}% 处于偏高/过热水平，短期存在获利了结压力。"
-                        f"建议：控制仓位不超过30%，若放量突破 {take_profit:.2f} 可加仓至50%。",
-                level="warning"
-            ))
+            insights.append(
+                CoreInsight(
+                    title="⚠ 获利盘偏高 — 注意控制仓位",
+                    content=f"获利盘 {winner_rate:.1f}% 处于偏高/过热水平，短期存在获利了结压力。"
+                    f"建议：控制仓位不超过30%，若放量突破 {take_profit:.2f} 可加仓至50%。",
+                    level="warning",
+                )
+            )
         elif not density_score:
-            insights.append(CoreInsight(
-                title="筹码分散 — 观望为主",
-                content="筹码集中度不足，缺乏主力资金运作痕迹。建议等待筹码在某一价位区间重新集中后再考虑布局。",
-                level="warning"
-            ))
-        
+            insights.append(
+                CoreInsight(
+                    title="筹码分散 — 观望为主",
+                    content="筹码集中度不足，缺乏主力资金运作痕迹。建议等待筹码在某一价位区间重新集中后再考虑布局。",
+                    level="warning",
+                )
+            )
+
         # ========== 模块4：成本抬升深度分析 ==========
         cost_rise_label = dim6["cost_rise"]["label"]
         cost_rise_detail = dim6["cost_rise"].get("detail", "")
-        
+
         if cost_rise_label == "✅✅":
-            insights.append(CoreInsight(
-                title="✅ 成本大幅抬升 — 上涨动能强劲",
-                content=f"{cost_rise_detail}。成本快速抬升表明资金积极换手推高底部，这是典型的上升趋势特征。"
-                        f"建议：可积极持有，止损位上移至 {stop_loss:.2f}。",
-                level="success"
-            ))
+            insights.append(
+                CoreInsight(
+                    title="✅ 成本大幅抬升 — 上涨动能强劲",
+                    content=f"{cost_rise_detail}。成本快速抬升表明资金积极换手推高底部，这是典型的上升趋势特征。"
+                    f"建议：可积极持有，止损位上移至 {stop_loss:.2f}。",
+                    level="success",
+                )
+            )
         elif cost_rise_label == "✅":
-            insights.append(CoreInsight(
-                title="✅ 成本温和抬升 — 趋势健康",
-                content=f"{cost_rise_detail}。成本温和抬升表明上涨节奏稳健，不急于追高。"
-                        f"建议：耐心持有，若放量突破 {take_profit:.2f} 可考虑加仓。",
-                level="success"
-            ))
+            insights.append(
+                CoreInsight(
+                    title="✅ 成本温和抬升 — 趋势健康",
+                    content=f"{cost_rise_detail}。成本温和抬升表明上涨节奏稳健，不急于追高。"
+                    f"建议：耐心持有，若放量突破 {take_profit:.2f} 可考虑加仓。",
+                    level="success",
+                )
+            )
         elif cost_rise_label == "⚠":
-            insights.append(CoreInsight(
-                title="⚠ 成本抬升放缓 — 警惕动能衰减",
-                content=f"{cost_rise_detail}。成本抬升力度减弱，需观察后续是否重新加速。"
-                        f"建议：持有者可适当降低仓位至 30%，等待方向明朗。",
-                level="warning"
-            ))
+            insights.append(
+                CoreInsight(
+                    title="⚠ 成本抬升放缓 — 警惕动能衰减",
+                    content=f"{cost_rise_detail}。成本抬升力度减弱，需观察后续是否重新加速。"
+                    f"建议：持有者可适当降低仓位至 30%，等待方向明朗。",
+                    level="warning",
+                )
+            )
         elif cost_rise_label == "❌":
-            insights.append(CoreInsight(
-                title="❌ 成本未抬升 — 缺乏持续上涨动能",
-                content=f"{cost_rise_detail}。成本停滞表明资金观望情绪浓厚，短期缺乏推升力量。"
-                        f"建议：无仓位者暂不介入；已有仓位者关注 {stop_loss:.2f} 支撑，跌破需果断止损。",
-                level="warning"
-            ))
-        
+            insights.append(
+                CoreInsight(
+                    title="❌ 成本未抬升 — 缺乏持续上涨动能",
+                    content=f"{cost_rise_detail}。成本停滞表明资金观望情绪浓厚，短期缺乏推升力量。"
+                    f"建议：无仓位者暂不介入；已有仓位者关注 {stop_loss:.2f} 支撑，跌破需果断止损。",
+                    level="warning",
+                )
+            )
+
         # ========== 模块5：价格走势阶段 + 操作指引 ==========
         stages = self._calc_price_stages(perf_df)
         if stages:
             latest_stage = stages[-1]
             if latest_stage.name == "大涨":
-                insights.append(CoreInsight(
-                    title=f"📈 处于上涨阶段（+{latest_stage.change_pct:.1f}%）",
-                    content=f"从 {latest_stage.start_price:.2f} 涨至 {latest_stage.end_price:.2f}，获利盘从 {latest_stage.winner_rate_start:.1f}% 升至 {latest_stage.winner_rate_end:.1f}%。"
-                            f"建议：持有者可在 {take_profit:.2f} 附近分批止盈；无仓位者等待回调至 {strongest_support:.2f} 附近再考虑介入。",
-                    level="info"
-                ))
+                insights.append(
+                    CoreInsight(
+                        title=f"📈 处于上涨阶段（+{latest_stage.change_pct:.1f}%）",
+                        content=f"从 {latest_stage.start_price:.2f} 涨至 {latest_stage.end_price:.2f}，获利盘从 {latest_stage.winner_rate_start:.1f}% 升至 {latest_stage.winner_rate_end:.1f}%。"
+                        f"建议：持有者可在 {take_profit:.2f} 附近分批止盈；无仓位者等待回调至 {strongest_support:.2f} 附近再考虑介入。",
+                        level="info",
+                    )
+                )
             elif latest_stage.name == "深度回调":
-                insights.append(CoreInsight(
-                    title=f"📉 处于深度回调阶段（-{abs(latest_stage.change_pct):.1f}%）",
-                    content=f"从高点 {latest_stage.start_price:.2f} 回调至 {latest_stage.end_price:.2f}。"
-                            f"建议：若六维评分 ≥ 3.0，此阶段可能是分批建仓良机，首笔仓位控制在 20%-30%，止损设在 {stop_loss:.2f}。",
-                    level="info"
-                ))
-        
+                insights.append(
+                    CoreInsight(
+                        title=f"📉 处于深度回调阶段（-{abs(latest_stage.change_pct):.1f}%）",
+                        content=f"从高点 {latest_stage.start_price:.2f} 回调至 {latest_stage.end_price:.2f}。"
+                        f"建议：若六维评分 ≥ 3.0，此阶段可能是分批建仓良机，首笔仓位控制在 20%-30%，止损设在 {stop_loss:.2f}。",
+                        level="info",
+                    )
+                )
+
         # ========== 模块6：综合操作策略 ==========
         # 使用与_build_result一致的rating计算
         if rating >= 4:
-            insights.append(CoreInsight(
-                title=f"⭐⭐⭐⭐ 综合评级优秀 — 建议积极布局",
-                content=f"六维评分 {total:.1f}/5.5，评级 {rating} 星。筹码结构健康，多项指标共振向好。"
-                        f"操作建议：无仓位者建议分批建仓（30%→50%→70%），已有仓位者可持有或适度加仓。"
-                        f"关键价位：止损 {stop_loss:.2f}，止盈 {take_profit:.2f}。",
-                level="success"
-            ))
+            insights.append(
+                CoreInsight(
+                    title="⭐⭐⭐⭐ 综合评级优秀 — 建议积极布局",
+                    content=f"六维评分 {total:.1f}/5.5，评级 {rating} 星。筹码结构健康，多项指标共振向好。"
+                    f"操作建议：无仓位者建议分批建仓（30%→50%→70%），已有仓位者可持有或适度加仓。"
+                    f"关键价位：止损 {stop_loss:.2f}，止盈 {take_profit:.2f}。",
+                    level="success",
+                )
+            )
         elif rating >= 3:
-            insights.append(CoreInsight(
-                title=f"⭐⭐⭐ 综合评级中等 — 建议谨慎参与",
-                content=f"六维评分 {total:.1f}/5.5，评级 {rating} 星。部分指标向好但存在分歧。"
-                        f"操作建议：小仓位试探（不超过30%），等待筹码结构改善或出现放量阳线信号后再加仓。"
-                        f"关键价位：止损 {stop_loss:.2f}，止盈 {take_profit:.2f}。",
-                level="info"
-            ))
+            insights.append(
+                CoreInsight(
+                    title="⭐⭐⭐ 综合评级中等 — 建议谨慎参与",
+                    content=f"六维评分 {total:.1f}/5.5，评级 {rating} 星。部分指标向好但存在分歧。"
+                    f"操作建议：小仓位试探（不超过30%），等待筹码结构改善或出现放量阳线信号后再加仓。"
+                    f"关键价位：止损 {stop_loss:.2f}，止盈 {take_profit:.2f}。",
+                    level="info",
+                )
+            )
         else:
-            insights.append(CoreInsight(
-                title=f"⭐ 综合评级偏弱 — 建议观望",
-                content=f"六维评分 {total:.1f}/5.5，评级 {rating} 星。多数指标未达标，筹码结构不佳。"
-                        f"操作建议：不建议介入，等待筹码集中度提升或出现明确底部信号。"
-                        f"关注信号：筹码在 {main_cost:.2f} 附近重新集中、放量突破。",
-                level="warning"
-            ))
-        
+            insights.append(
+                CoreInsight(
+                    title="⭐ 综合评级偏弱 — 建议观望",
+                    content=f"六维评分 {total:.1f}/5.5，评级 {rating} 星。多数指标未达标，筹码结构不佳。"
+                    f"操作建议：不建议介入，等待筹码集中度提升或出现明确底部信号。"
+                    f"关注信号：筹码在 {main_cost:.2f} 附近重新集中、放量突破。",
+                    level="warning",
+                )
+            )
+
         # ========== 模块7：风险提示 ==========
         if not dim6["support_level"]["score"]:
-            insights.append(CoreInsight(
-                title="⚠ 下方支撑薄弱",
-                content="当前价下方筹码稀疏，形成'真空悬崖'。一旦跌破关键位可能引发连锁抛售。"
-                        f"建议：严格止损在 {stop_loss:.2f}，不可扛单。",
-                level="danger"
-            ))
-        
+            insights.append(
+                CoreInsight(
+                    title="⚠ 下方支撑薄弱",
+                    content="当前价下方筹码稀疏，形成'真空悬崖'。一旦跌破关键位可能引发连锁抛售。"
+                    f"建议：严格止损在 {stop_loss:.2f}，不可扛单。",
+                    level="danger",
+                )
+            )
+
         # 否决项提示
         veto_rating, veto_reason = self._apply_veto_rules(dim6, chips_df, None, close)
         if veto_rating < 5 and veto_reason:
-            insights.append(CoreInsight(
-                title=f"⛔ 评级受限：{veto_reason}",
-                content=f"因{veto_reason}，综合评级被限制为 {veto_rating} 星。即使评分较高也需谨慎对待。",
-                level="danger" if veto_rating <= 2 else "warning"
-            ))
-        
+            insights.append(
+                CoreInsight(
+                    title=f"⛔ 评级受限：{veto_reason}",
+                    content=f"因{veto_reason}，综合评级被限制为 {veto_rating} 星。即使评分较高也需谨慎对待。",
+                    level="danger" if veto_rating <= 2 else "warning",
+                )
+            )
+
         return insights
 
-    def _generate_detailed_summary(self, close: float, weight_avg: float, winner_rate: float, dim6: dict, perf_df: pd.DataFrame, chips_df: pd.DataFrame, margin_change: List[MarginChangeItem], prev_chips_df: Optional[pd.DataFrame] = None) -> str:
+    def _generate_detailed_summary(
+        self,
+        close: float,
+        weight_avg: float,
+        winner_rate: float,
+        dim6: dict,
+        perf_df: pd.DataFrame,
+        chips_df: pd.DataFrame,
+        margin_change: List[MarginChangeItem],
+        prev_chips_df: Optional[pd.DataFrame] = None,
+    ) -> str:
         """生成详细分析总结（参考范例格式）"""
         total = dim6["total"]
         # 应用与 _build_result 相同的计算逻辑，确保一致性
@@ -1911,7 +2012,9 @@ class ChipDeepAnalyzer:
             changes = []
             for item in top_changes:
                 direction = "↑" if item.change > 0 else "↓"
-                changes.append(f"  [{item.price_low:.1f}, {item.price_high:.1f}) {item.prev_pct:.1f}% → {item.curr_pct:.1f}% ({direction}{abs(item.change):.1f}%)")
+                changes.append(
+                    f"  [{item.price_low:.1f}, {item.price_high:.1f}) {item.prev_pct:.1f}% → {item.curr_pct:.1f}% ({direction}{abs(item.change):.1f}%)"
+                )
             margin_desc = "\n".join(changes)
         else:
             margin_desc = "  变化平缓或数据不足"

@@ -11,12 +11,8 @@ class StockstatsUtils:
     @staticmethod
     def get_stock_stats(
         symbol: Annotated[str, "ticker symbol for the company"],
-        indicator: Annotated[
-            str, "quantitative indicators based off of the stock data for the company"
-        ],
-        curr_date: Annotated[
-            str, "curr date for retrieving stock price data, YYYY-mm-dd"
-        ],
+        indicator: Annotated[str, "quantitative indicators based off of the stock data for the company"],
+        curr_date: Annotated[str, "curr date for retrieving stock price data, YYYY-mm-dd"],
     ):
         config = get_config()
 

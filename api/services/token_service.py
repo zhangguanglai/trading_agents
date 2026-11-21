@@ -17,6 +17,7 @@ MAX_TOKENS_PER_USER = 10
 
 def _hmac_key() -> bytes:
     from api.services.auth_service import _secret_key
+
     return _secret_key().encode("utf-8")
 
 
@@ -70,10 +71,7 @@ def list_user_tokens(db: Session, user_id: str) -> List[UserTokenDB]:
 
 def delete_token(db: Session, user_id: str, token_id: str) -> bool:
     """Delete (revoke) a token."""
-    token_row = db.query(UserTokenDB).filter(
-        UserTokenDB.id == token_id,
-        UserTokenDB.user_id == user_id
-    ).first()
+    token_row = db.query(UserTokenDB).filter(UserTokenDB.id == token_id, UserTokenDB.user_id == user_id).first()
 
     if not token_row:
         return False
@@ -89,10 +87,7 @@ def verify_token(db: Session, token_str: str) -> Optional[UserDB]:
         return None
 
     token_hash = _hash_token(token_str)
-    token_row = db.query(UserTokenDB).filter(
-        UserTokenDB.token == token_hash,
-        UserTokenDB.is_active == True
-    ).first()
+    token_row = db.query(UserTokenDB).filter(UserTokenDB.token == token_hash, UserTokenDB.is_active.is_(True)).first()
 
     if not token_row:
         return None

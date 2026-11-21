@@ -28,4 +28,3 @@ def get_prompt(key: str, config: Mapping[str, Any] | None = None) -> str:
             return ZH_PROMPTS[key]
         return EN_PROMPTS[key]
     return EN_PROMPTS[key]
-

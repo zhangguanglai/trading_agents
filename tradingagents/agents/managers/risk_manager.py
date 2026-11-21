@@ -1,5 +1,3 @@
-import time
-import json
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.agents.utils.agent_states import current_tracker_var
@@ -14,9 +12,6 @@ from tradingagents.agents.utils.debate_utils import (
 
 def create_risk_manager(llm, memory):
     async def risk_manager_node(state) -> dict:
-
-        company_name = state["company_of_interest"]
-
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
         market_research_report = state["market_report"]
@@ -55,8 +50,10 @@ def create_risk_manager(llm, memory):
             full_content += content
             if tracker:
                 tracker.emit_debate_token(
-                    debate="risk", agent="Portfolio Manager",
-                    round_num=-1, token=content,
+                    debate="risk",
+                    agent="Portfolio Manager",
+                    round_num=-1,
+                    token=content,
                 )
 
         judge_result = extract_risk_judge_result(full_content)
@@ -71,8 +68,11 @@ def create_risk_manager(llm, memory):
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
         if tracker:
             tracker.emit_debate_message(
-                debate="risk", agent="Portfolio Manager",
-                round_num=-1, content=cleaned_response, is_verdict=True,
+                debate="risk",
+                agent="Portfolio Manager",
+                round_num=-1,
+                content=cleaned_response,
+                is_verdict=True,
             )
 
         new_risk_debate_state = {

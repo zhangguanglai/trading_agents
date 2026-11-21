@@ -38,18 +38,14 @@ class CnBaoStockProvider(BaseMarketDataProvider):
         try:
             import baostock as bs  # type: ignore
         except ImportError as exc:
-            raise NotImplementedError(
-                "cn_baostock requires 'baostock'. Install it with: pip install baostock"
-            ) from exc
+            raise NotImplementedError("cn_baostock requires 'baostock'. Install it with: pip install baostock") from exc
         return bs
 
     def _normalize_symbol(self, symbol: str) -> str:
         s = symbol.strip().lower()
         m = re.search(r"(\d{6})", s)
         if not m:
-            raise NotImplementedError(
-                f"cn_baostock only supports A-share 6-digit symbols, got: {symbol}"
-            )
+            raise NotImplementedError(f"cn_baostock only supports A-share 6-digit symbols, got: {symbol}")
         code = m.group(1)
         if code.startswith(("5", "6", "9")):
             return f"sh.{code}"
@@ -80,9 +76,7 @@ class CnBaoStockProvider(BaseMarketDataProvider):
                 adjustflag="2",
             )
             if rs.error_code != "0":
-                raise NotImplementedError(
-                    f"baostock query failed: {rs.error_code} {rs.error_msg}"
-                )
+                raise NotImplementedError(f"baostock query failed: {rs.error_code} {rs.error_msg}")
             rows = []
             while rs.next():
                 rows.append(rs.get_row_data())
@@ -119,9 +113,7 @@ class CnBaoStockProvider(BaseMarketDataProvider):
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         return header + out.to_csv(index=False)
 
-    def get_indicators(
-        self, symbol: str, indicator: str, curr_date: str, look_back_days: int
-    ) -> str:
+    def get_indicators(self, symbol: str, indicator: str, curr_date: str, look_back_days: int) -> str:
         if indicator not in self.INDICATOR_DESCRIPTIONS:
             raise ValueError(
                 f"Indicator {indicator} is not supported. "
@@ -163,9 +155,7 @@ class CnBaoStockProvider(BaseMarketDataProvider):
                 value = cn_no_data_reason(key)
             elif value == "N/A":
                 value = cn_no_data_reason(key)
-            lines.append(
-                f"{key}: {value}"
-            )
+            lines.append(f"{key}: {value}")
             d -= timedelta(days=1)
 
         result = (
@@ -179,30 +169,20 @@ class CnBaoStockProvider(BaseMarketDataProvider):
     def get_fundamentals(self, ticker: str, curr_date: str = None) -> str:
         raise NotImplementedError("cn_baostock does not provide fundamentals yet.")
 
-    def get_balance_sheet(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_balance_sheet(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         raise NotImplementedError("cn_baostock does not provide balance sheet yet.")
 
-    def get_cashflow(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_cashflow(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         raise NotImplementedError("cn_baostock does not provide cashflow yet.")
 
-    def get_income_statement(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_income_statement(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         raise NotImplementedError("cn_baostock does not provide income statement yet.")
 
     def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
         raise NotImplementedError("cn_baostock does not provide news yet.")
 
-    def get_global_news(
-        self, curr_date: str, look_back_days: int = 7, limit: int = 50
-    ) -> str:
+    def get_global_news(self, curr_date: str, look_back_days: int = 7, limit: int = 50) -> str:
         raise NotImplementedError("cn_baostock does not provide global news yet.")
 
     def get_insider_transactions(self, symbol: str, curr_date: str = None) -> str:
-        raise NotImplementedError(
-            "cn_baostock does not provide insider transactions yet."
-        )
+        raise NotImplementedError("cn_baostock does not provide insider transactions yet.")

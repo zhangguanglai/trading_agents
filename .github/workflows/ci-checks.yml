@@ -1,8 +1,7 @@
 name: Lint and Test
 
 on:
-  pull_request:
-    branches: ["main"]
+  pull_request: # run on every PR, not only those targeting main
   push:
     branches: ["main"]
 
@@ -32,12 +31,17 @@ jobs:
         run: uv sync --group dev
 
       - name: Lint with ruff
-        run: |
-          uv pip install ruff
-          uv run ruff check .
+        run: uv run ruff check .
 
-      - name: Run pytest
-        run: uv run pytest tests/ -q
+      - name: Check formatting with ruff
+        run: uv run ruff format --check .
+
+      - name: Run pytest with coverage gate
+        # Non-regression coverage gate pinned to the measured baseline.
+        # Raise --cov-fail-under as test coverage improves:  40 -> 60 -> 75
+        # (pytest-timeout in pyproject addopts fails fast so CI never hangs;
+        #  network tests are excluded by default, opt in locally with -m network)
+        run: uv run pytest tests/ -q --cov --cov-report=term --cov-fail-under=40 -m "not network"
 
   frontend-checks:
     runs-on: ubuntu-latest

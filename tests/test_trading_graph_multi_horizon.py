@@ -1,9 +1,9 @@
 """Tests for TradingAgentsGraph dual-horizon propagation (Task 10)."""
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from tradingagents.graph.propagation import Propagator
 from tradingagents.graph.data_collector import DataCollector
@@ -13,6 +13,7 @@ from tradingagents.graph.setup import GraphSetup
 # ---------------------------------------------------------------------------
 # Propagator tests
 # ---------------------------------------------------------------------------
+
 
 class TestPropagatorInitialState:
     def test_default_horizon_and_traces(self):
@@ -29,7 +30,12 @@ class TestPropagatorInitialState:
 
     def test_user_intent_injected(self):
         p = Propagator()
-        intent = {"ticker": "600519", "horizons": ["short", "medium"], "focus_areas": ["量价"], "specific_questions": []}
+        intent = {
+            "ticker": "600519",
+            "horizons": ["short", "medium"],
+            "focus_areas": ["量价"],
+            "specific_questions": [],
+        }
         state = p.create_initial_state("600519", "2024-01-15", user_intent=intent)
         assert state["user_intent"] == intent
 
@@ -51,17 +57,21 @@ class TestPropagatorInitialState:
 # TradingAgentsGraph._build_horizon_result tests
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_graph_class():
     """Return a lightweight TradingAgentsGraph without real LLM/tool setup."""
-    with patch("tradingagents.graph.trading_graph.create_llm_client"), \
-         patch("tradingagents.graph.trading_graph.FinancialSituationMemory"), \
-         patch("tradingagents.graph.trading_graph.GraphSetup"), \
-         patch("tradingagents.graph.trading_graph.ConditionalLogic"), \
-         patch("tradingagents.graph.trading_graph.Propagator"), \
-         patch("tradingagents.graph.trading_graph.Reflector"), \
-         patch("tradingagents.graph.trading_graph.SignalProcessor"), \
-         patch("tradingagents.graph.trading_graph.set_config"):
+    with (
+        patch("tradingagents.graph.trading_graph.create_llm_client"),
+        patch("tradingagents.graph.trading_graph.FinancialSituationMemory"),
+        patch("tradingagents.graph.trading_graph.GraphSetup"),
+        patch("tradingagents.graph.trading_graph.ConditionalLogic"),
+        patch("tradingagents.graph.trading_graph.Propagator"),
+        patch("tradingagents.graph.trading_graph.Reflector"),
+        patch("tradingagents.graph.trading_graph.SignalProcessor"),
+        patch("tradingagents.graph.trading_graph.set_config"),
+    ):
         from tradingagents.graph.trading_graph import TradingAgentsGraph
+
         ta = TradingAgentsGraph.__new__(TradingAgentsGraph)
         ta.debug = False
         ta.config = {}
@@ -113,6 +123,7 @@ class TestBuildHorizonResult:
 # propagate_async integration (mocked graph)
 # ---------------------------------------------------------------------------
 
+
 class TestPropagateAsync:
     def setup_method(self):
         self.ta = _make_mock_graph_class()
@@ -136,9 +147,7 @@ class TestPropagateAsync:
         }
 
     def test_returns_short_term_result_and_reserved_medium_slot(self):
-        self.ta.graph.ainvoke = AsyncMock(
-            side_effect=lambda state, **kw: self._fake_state(state["horizon"])
-        )
+        self.ta.graph.ainvoke = AsyncMock(side_effect=lambda state, **kw: self._fake_state(state["horizon"]))
         self.ta.data_collector.collect = MagicMock(return_value={})
         self.ta.data_collector.evict = MagicMock()
 
@@ -151,9 +160,7 @@ class TestPropagateAsync:
         assert result["user_intent"]["ticker"] == "600519"
 
     def test_data_collected_and_evicted(self):
-        self.ta.graph.ainvoke = AsyncMock(
-            side_effect=lambda state, **kw: self._fake_state(state["horizon"])
-        )
+        self.ta.graph.ainvoke = AsyncMock(side_effect=lambda state, **kw: self._fake_state(state["horizon"]))
         collect_mock = MagicMock(return_value={})
         evict_mock = MagicMock()
         self.ta.data_collector.collect = collect_mock
@@ -165,9 +172,7 @@ class TestPropagateAsync:
         evict_mock.assert_called_once_with("600519", "2024-01-15")
 
     def test_query_parses_intent(self):
-        self.ta.graph.ainvoke = AsyncMock(
-            side_effect=lambda state, **kw: self._fake_state(state["horizon"])
-        )
+        self.ta.graph.ainvoke = AsyncMock(side_effect=lambda state, **kw: self._fake_state(state["horizon"]))
         self.ta.data_collector.collect = MagicMock(return_value={})
         self.ta.data_collector.evict = MagicMock()
 
@@ -179,9 +184,7 @@ class TestPropagateAsync:
             "specific_questions": [],
         }
         with patch("tradingagents.graph.trading_graph.parse_intent", return_value=parsed_intent):
-            result = asyncio.run(
-                self.ta.propagate_async("600519", "2024-01-15", query="分析600519短线机会")
-            )
+            result = asyncio.run(self.ta.propagate_async("600519", "2024-01-15", query="分析600519短线机会"))
 
         assert result["user_intent"]["focus_areas"] == ["技术面"]
 
@@ -239,8 +242,10 @@ def test_graph_setup_wires_market_analyst_without_name_errors():
         "create_trader": MagicMock(return_value="trader_node"),
     }
 
-    with patch("tradingagents.graph.setup._load_agent_factories", return_value=factories), \
-         patch("tradingagents.graph.setup.StateGraph", _FakeWorkflow):
+    with (
+        patch("tradingagents.graph.setup._load_agent_factories", return_value=factories),
+        patch("tradingagents.graph.setup.StateGraph", _FakeWorkflow),
+    ):
         graph_setup = GraphSetup(
             quick_llm,
             deep_llm,

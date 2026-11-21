@@ -53,19 +53,23 @@ def add_to_watchlist(
     for idx, token in enumerate(tokens):
         symbol, name, error = _resolve_watchlist_identifier(token, name_to_code, code_to_name)
         if error:
-            results.append({
+            results.append(
+                {
+                    "_order": idx,
+                    "input": token,
+                    "status": "invalid",
+                    "message": error,
+                }
+            )
+            continue
+        resolved_entries.append(
+            {
                 "_order": idx,
                 "input": token,
-                "status": "invalid",
-                "message": error,
-            })
-            continue
-        resolved_entries.append({
-            "_order": idx,
-            "input": token,
-            "symbol": symbol,
-            "name": name,
-        })
+                "symbol": symbol,
+                "name": name,
+            }
+        )
 
     add_results = watchlist_service.add_watchlist_items(
         db,
@@ -77,15 +81,17 @@ def add_to_watchlist(
         if item:
             item["name"] = entry["name"]
             item["has_scheduled"] = False
-        results.append({
-            "_order": entry["_order"],
-            "input": entry["input"],
-            "symbol": entry["symbol"],
-            "name": entry["name"],
-            "status": result["status"],
-            "message": result["message"],
-            "item": item,
-        })
+        results.append(
+            {
+                "_order": entry["_order"],
+                "input": entry["input"],
+                "symbol": entry["symbol"],
+                "name": entry["name"],
+                "status": result["status"],
+                "message": result["message"],
+                "item": item,
+            }
+        )
 
     results.sort(key=lambda row: row["_order"])
     for row in results:

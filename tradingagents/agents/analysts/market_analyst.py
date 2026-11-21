@@ -34,7 +34,7 @@ def create_market_analyst(llm, data_collector=None):
         user_intent = state.get("user_intent") or {}
         focus_areas = user_intent.get("focus_areas", [])
         specific_questions = user_intent.get("specific_questions", [])
-        
+
         config = get_config()
         horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, agent_type="market")
         system_message = get_prompt("market_system_message", config=config)
@@ -51,19 +51,17 @@ def create_market_analyst(llm, data_collector=None):
         else:
             stock_data, indicators, data_window = await _fetch_direct(ticker, current_date, horizon)
 
-        indicator_blocks = [
-            f"【{ind}】\n{indicators.get(ind, '无数据')}"
-            for ind in MARKET_INDICATORS
-        ]
+        indicator_blocks = [f"【{ind}】\n{indicators.get(ind, '无数据')}" for ind in MARKET_INDICATORS]
 
         messages = [
             SystemMessage(content=system_message + "\n\n请全程使用中文。"),
-            HumanMessage(content=(
-                horizon_ctx + "\n"
-                f"以下是 {ticker} 在 {current_date} 的 K 线数据与指标（数据窗口：{data_window}）。\n\n"
-                f"【get_stock_data】\n{stock_data}\n\n"
-                + "\n\n".join(indicator_blocks)
-            )),
+            HumanMessage(
+                content=(
+                    horizon_ctx + "\n"
+                    f"以下是 {ticker} 在 {current_date} 的 K 线数据与指标（数据窗口：{data_window}）。\n\n"
+                    f"【get_stock_data】\n{stock_data}\n\n" + "\n\n".join(indicator_blocks)
+                )
+            ),
         ]
 
         # ── 实现 Token 级流式输出 ──────────────────
@@ -74,19 +72,21 @@ def create_market_analyst(llm, data_collector=None):
             full_content += content
             if tracker:
                 tracker._emit_token("Market Analyst", "market_report", content)
-        
+
         verdict, confidence = extract_verdict(full_content)
 
         return {
             "market_report": full_content,
-            "analyst_traces": [{
-                "agent": "market_analyst",
-                "horizon": horizon,
-                "data_window": data_window,
-                "key_finding": f"市场技术面结论：{verdict}",
-                "verdict": verdict,
-                "confidence": confidence,
-            }],
+            "analyst_traces": [
+                {
+                    "agent": "market_analyst",
+                    "horizon": horizon,
+                    "data_window": data_window,
+                    "key_finding": f"市场技术面结论：{verdict}",
+                    "verdict": verdict,
+                    "confidence": confidence,
+                }
+            ],
         }
 
     return market_analyst_node
@@ -105,21 +105,32 @@ async def _fetch_direct(ticker, current_date, horizon):
     days = 14 if horizon == "short" else 90
     end_dt = datetime.strptime(current_date, "%Y-%m-%d")
     start_dt = end_dt - timedelta(days=days)
-    
+
     # Run stock data fetch and all indicator fetches in parallel
     tasks = {
-        "stock_data": _safe(get_stock_data, {
-            "symbol": ticker, "start_date": start_dt.strftime("%Y-%m-%d"), "end_date": current_date,
-        })
+        "stock_data": _safe(
+            get_stock_data,
+            {
+                "symbol": ticker,
+                "start_date": start_dt.strftime("%Y-%m-%d"),
+                "end_date": current_date,
+            },
+        )
     }
     for ind in MARKET_INDICATORS:
-        tasks[ind] = _safe(get_indicators, {
-            "symbol": ticker, "indicator": ind, "curr_date": current_date, "look_back_days": days,
-        })
-    
+        tasks[ind] = _safe(
+            get_indicators,
+            {
+                "symbol": ticker,
+                "indicator": ind,
+                "curr_date": current_date,
+                "look_back_days": days,
+            },
+        )
+
     keys = list(tasks.keys())
     results = await asyncio.gather(*[tasks[k] for k in keys])
     res_map = dict(zip(keys, results))
-    
+
     stock_data = res_map.pop("stock_data")
     return stock_data, res_map, f"{days}天"

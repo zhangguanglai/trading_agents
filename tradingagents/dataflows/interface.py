@@ -151,10 +151,7 @@ def route_to_vendor(method: str, *args, **kwargs):
     fallback_vendors = _resolve_vendor_chain(method, vendor_config)
     args_summary = _summarize_args(args, kwargs)
     last_exc = None
-    _trace(
-        f"method={method} {args_summary} category={category} "
-        f"configured='{vendor_config}' chain={fallback_vendors}"
-    )
+    _trace(f"method={method} {args_summary} category={category} configured='{vendor_config}' chain={fallback_vendors}")
 
     # Check if this is an A-share only method called with HK stock
     if method in _CN_MARKET_ONLY_METHODS:
@@ -162,7 +159,9 @@ def route_to_vendor(method: str, *args, **kwargs):
         if _is_hk_stock(symbol):
             _trace(f"method={method} status=skip reason=hk-stock-not-supported")
             if method == "get_individual_fund_flow":
-                return f"{symbol} 为港股标的，暂无主力资金流向数据（港股无此数据接口）。分析将基于成交量和价量关系进行。"
+                return (
+                    f"{symbol} 为港股标的，暂无主力资金流向数据（港股无此数据接口）。分析将基于成交量和价量关系进行。"
+                )
             elif method == "get_lhb_detail":
                 return f"{symbol} 为港股标的，港股无龙虎榜机制。"
             elif method == "get_board_fund_flow":
@@ -198,17 +197,11 @@ def route_to_vendor(method: str, *args, **kwargs):
             return result
         except (AlphaVantageRateLimitError, NotImplementedError) as exc:
             last_exc = exc
-            _trace(
-                f"method={method} {args_summary} vendor={vendor} status=fallback "
-                f"reason={type(exc).__name__}: {exc}"
-            )
+            _trace(f"method={method} {args_summary} vendor={vendor} status=fallback reason={type(exc).__name__}: {exc}")
             continue
         except Exception as exc:
             last_exc = exc
-            _trace(
-                f"method={method} {args_summary} vendor={vendor} status=fallback "
-                f"reason={type(exc).__name__}: {exc}"
-            )
+            _trace(f"method={method} {args_summary} vendor={vendor} status=fallback reason={type(exc).__name__}: {exc}")
             continue
 
     _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
@@ -218,7 +211,4 @@ def route_to_vendor(method: str, *args, **kwargs):
             f"Configured chain: {fallback_vendors}. "
             f"Last error: {type(last_exc).__name__}: {last_exc}"
         ) from last_exc
-    raise RuntimeError(
-        f"No available vendor for method '{method}'. "
-        f"Configured chain: {fallback_vendors}"
-    )
+    raise RuntimeError(f"No available vendor for method '{method}'. Configured chain: {fallback_vendors}")

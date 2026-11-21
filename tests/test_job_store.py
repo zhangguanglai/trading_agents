@@ -134,6 +134,7 @@ def test_clear():
 def test_subscribe_drops_queue_on_exit():
     """Subscribe should delete the backing queue when its generator terminates,
     so disconnected SSE clients don't leak queues forever."""
+
     async def scenario():
         store = _make_store()
         store.set_job("j1", status="running")

@@ -11,8 +11,11 @@ def _make_state(horizon="short"):
         "company_of_interest": "600519",
         "horizon": horizon,
         "user_intent": {
-            "raw_query": "test", "ticker": "600519",
-            "horizons": ["short", "medium"], "focus_areas": [], "specific_questions": [],
+            "raw_query": "test",
+            "ticker": "600519",
+            "horizons": ["short", "medium"],
+            "focus_areas": [],
+            "specific_questions": [],
         },
     }
 
@@ -21,11 +24,23 @@ def _stub_pool(horizon="short"):
     days = "14天" if horizon == "short" else "90天"
     return {
         "stock_data": "close,volume\n100,1000",
-        "indicators": {k: "50" for k in [
-            "close_50_sma","close_200_sma","close_10_ema",
-            "rsi","macd","boll","boll_ub","boll_lb","atr","vwma"
-        ]},
-        "_data_window": days, "_horizon": horizon,
+        "indicators": {
+            k: "50"
+            for k in [
+                "close_50_sma",
+                "close_200_sma",
+                "close_10_ema",
+                "rsi",
+                "macd",
+                "boll",
+                "boll_ub",
+                "boll_lb",
+                "atr",
+                "vwma",
+            ]
+        },
+        "_data_window": days,
+        "_horizon": horizon,
     }
 
 
@@ -33,9 +48,7 @@ def test_market_analyst_returns_trace():
     mock_llm = MagicMock()
 
     async def _astream(_messages):
-        yield SimpleNamespace(
-            content='报告\n<!-- VERDICT: {"direction": "看多", "reason": "趋势向上"} -->'
-        )
+        yield SimpleNamespace(content='报告\n<!-- VERDICT: {"direction": "看多", "reason": "趋势向上"} -->')
 
     mock_llm.astream = _astream
     collector = DataCollector()

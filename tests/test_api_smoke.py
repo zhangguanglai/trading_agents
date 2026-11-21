@@ -8,6 +8,7 @@ Covers:
 5. /v1/chat/completions — valid stock dry_run completes job
 6. /v1/jobs/{id}/result — completed job returns result
 """
+
 import time
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,26 +25,31 @@ from api.database import ImportedPortfolioPositionDB, get_db_ctx
 # Schema-only test (no server needed)
 # ---------------------------------------------------------------------------
 
+
 class TestAnalyzeRequestSchema:
     def test_query_field_exists_and_optional(self):
         from api.main import AnalyzeRequest
+
         # query defaults to None
         req = AnalyzeRequest(symbol="600519.SH")
         assert req.query is None
 
     def test_query_field_accepts_string(self):
         from api.main import AnalyzeRequest
+
         req = AnalyzeRequest(symbol="600519.SH", query="分析贵州茅台短线机会")
         assert req.query == "分析贵州茅台短线机会"
 
     def test_symbol_is_optional(self):
         from api.main import AnalyzeRequest
+
         # should not raise
         req = AnalyzeRequest()
         assert req.symbol == ""
 
     def test_dry_run_defaults_false(self):
         from api.main import AnalyzeRequest
+
         req = AnalyzeRequest(symbol="600519.SH")
         assert req.dry_run is False
 
@@ -52,9 +58,11 @@ class TestAnalyzeRequestSchema:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_client():
     """Create a TestClient for the FastAPI app."""
     from api.main import app
+
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -107,6 +115,7 @@ def _wait_job(client: TestClient, token: str, job_id: str, timeout: float = 5.0)
 # API integration tests
 # ---------------------------------------------------------------------------
 
+
 class TestAnalyzeEndpoint:
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -116,11 +125,15 @@ class TestAnalyzeEndpoint:
 
     def test_dry_run_completes(self):
         """Legacy path: symbol + dry_run → completed immediately."""
-        r = self.client.post("/v1/analyze", headers=self.headers, json={
-            "symbol": "600519.SH",
-            "trade_date": "2024-01-15",
-            "dry_run": True,
-        })
+        r = self.client.post(
+            "/v1/analyze",
+            headers=self.headers,
+            json={
+                "symbol": "600519.SH",
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            },
+        )
         assert r.status_code == 200
         job_id = r.json()["job_id"]
         result = _wait_job(self.client, self.token, job_id)
@@ -130,12 +143,16 @@ class TestAnalyzeEndpoint:
 
     def test_query_field_accepted_with_dry_run(self):
         """query field is accepted by schema; dry_run still short-circuits before LLM."""
-        r = self.client.post("/v1/analyze", headers=self.headers, json={
-            "symbol": "600519.SH",
-            "trade_date": "2024-01-15",
-            "query": "分析贵州茅台短线机会，关注量价关系",
-            "dry_run": True,
-        })
+        r = self.client.post(
+            "/v1/analyze",
+            headers=self.headers,
+            json={
+                "symbol": "600519.SH",
+                "trade_date": "2024-01-15",
+                "query": "分析贵州茅台短线机会，关注量价关系",
+                "dry_run": True,
+            },
+        )
         assert r.status_code == 200
         job_id = r.json()["job_id"]
         result = _wait_job(self.client, self.token, job_id)
@@ -144,27 +161,39 @@ class TestAnalyzeEndpoint:
 
     def test_missing_symbol_accepted_by_schema(self):
         """symbol is optional in schema; job is created (may fail later without LLM, but 200 on submit)."""
-        r = self.client.post("/v1/analyze", headers=self.headers, json={
-            "trade_date": "2024-01-15",
-            "dry_run": True,
-        })
+        r = self.client.post(
+            "/v1/analyze",
+            headers=self.headers,
+            json={
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            },
+        )
         assert r.status_code == 200
         assert "job_id" in r.json()
 
     def test_requires_auth(self):
         """Unauthenticated request returns 401/403."""
-        r = self.client.post("/v1/analyze", json={
-            "symbol": "600519.SH", "dry_run": True,
-        })
+        r = self.client.post(
+            "/v1/analyze",
+            json={
+                "symbol": "600519.SH",
+                "dry_run": True,
+            },
+        )
         assert r.status_code in (401, 403)
 
     def test_selected_analysts_field(self):
         """selected_analysts are echoed back in dry_run result."""
-        r = self.client.post("/v1/analyze", headers=self.headers, json={
-            "symbol": "600519.SH",
-            "selected_analysts": ["market", "news"],
-            "dry_run": True,
-        })
+        r = self.client.post(
+            "/v1/analyze",
+            headers=self.headers,
+            json={
+                "symbol": "600519.SH",
+                "selected_analysts": ["market", "news"],
+                "dry_run": True,
+            },
+        )
         job_id = r.json()["job_id"]
         result = _wait_job(self.client, self.token, job_id)
         assert result["result"]["selected_analysts"] == ["market", "news"]
@@ -199,11 +228,15 @@ class TestAnalyzeEndpoint:
             )
             db.commit()
 
-        r = self.client.post("/v1/analyze", headers=self.headers, json={
-            "symbol": "600519.SH",
-            "trade_date": "2024-01-15",
-            "dry_run": True,
-        })
+        r = self.client.post(
+            "/v1/analyze",
+            headers=self.headers,
+            json={
+                "symbol": "600519.SH",
+                "trade_date": "2024-01-15",
+                "dry_run": True,
+            },
+        )
         assert r.status_code == 200
         job_id = r.json()["job_id"]
         result = _wait_job(self.client, self.token, job_id)
@@ -226,26 +259,35 @@ class TestChatCompletionsEndpoint:
         """Non-stock text returns 400 with Chinese error message."""
         # Mock the LLM used for stock extraction to return no stock
         with patch("api.main._ai_extract_symbol_and_date", return_value=(None, None, ["short"], [], [], {})):
-            r = self.client.post("/v1/chat/completions", headers=self.headers, json={
-                "messages": [{"role": "user", "content": "今天天气真好"}],
-                "stream": False,
-                "dry_run": True,
-            })
+            r = self.client.post(
+                "/v1/chat/completions",
+                headers=self.headers,
+                json={
+                    "messages": [{"role": "user", "content": "今天天气真好"}],
+                    "stream": False,
+                    "dry_run": True,
+                },
+            )
         assert r.status_code == 400
 
     def test_valid_stock_dry_run_creates_job(self):
         """Valid stock message with dry_run creates and completes a job."""
-        with patch("api.main._ai_extract_symbol_and_date", return_value=("600519.SH", "2024-01-15", ["short"], [], [], {})):
-            r = self.client.post("/v1/chat/completions", headers=self.headers, json={
-                "messages": [{"role": "user", "content": "分析600519短线机会"}],
-                "stream": False,
-                "dry_run": True,
-            })
+        with patch(
+            "api.main._ai_extract_symbol_and_date", return_value=("600519.SH", "2024-01-15", ["short"], [], [], {})
+        ):
+            r = self.client.post(
+                "/v1/chat/completions",
+                headers=self.headers,
+                json={
+                    "messages": [{"role": "user", "content": "分析600519短线机会"}],
+                    "stream": False,
+                    "dry_run": True,
+                },
+            )
         assert r.status_code == 200
         body = r.json()
         # Non-stream returns OpenAI-compatible format with job_id embedded in content
         assert "choices" in body
-        content = body["choices"][0]["message"]["content"]
         # Extract job_id from content (format: "已启动分析任务：<job_id>")
         job_id = body["id"].replace("chatcmpl-", "")
         result = _wait_job(self.client, self.token, job_id)
@@ -253,10 +295,13 @@ class TestChatCompletionsEndpoint:
         assert result["decision"] == "DRY_RUN"
 
     def test_requires_auth(self):
-        r = self.client.post("/v1/chat/completions", json={
-            "messages": [{"role": "user", "content": "分析600519"}],
-            "stream": False,
-        })
+        r = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "分析600519"}],
+                "stream": False,
+            },
+        )
         assert r.status_code in (401, 403)
 
 
@@ -290,11 +335,17 @@ class TestRuntimeConfigWarmup:
 
     def test_model_change_schedules_warmup(self):
         model_name = f"gpt-test-quick-{uuid4().hex[:8]}"
-        with patch("api.main._probe_runtime_config", return_value={"status": "ok", "model": model_name}) as probe, \
-             patch("api.main._run_config_warmup") as warmup:
-            r = self.client.patch("/v1/config", headers=self.headers, json={
-                "quick_think_llm": model_name,
-            })
+        with (
+            patch("api.main._probe_runtime_config", return_value={"status": "ok", "model": model_name}),
+            patch("api.main._run_config_warmup") as warmup,
+        ):
+            r = self.client.patch(
+                "/v1/config",
+                headers=self.headers,
+                json={
+                    "quick_think_llm": model_name,
+                },
+            )
         assert r.status_code == 200
         body = r.json()
         assert body["warmup"]["status"] == "scheduled"
@@ -304,9 +355,13 @@ class TestRuntimeConfigWarmup:
 
     def test_non_model_change_skips_warmup(self):
         with patch("api.main._run_config_warmup") as warmup:
-            r = self.client.patch("/v1/config", headers=self.headers, json={
-                "max_debate_rounds": 3,
-            })
+            r = self.client.patch(
+                "/v1/config",
+                headers=self.headers,
+                json={
+                    "max_debate_rounds": 3,
+                },
+            )
         assert r.status_code == 200
         body = r.json()
         assert body["warmup"]["status"] == "skipped"
@@ -314,27 +369,41 @@ class TestRuntimeConfigWarmup:
         warmup.assert_not_called()
 
     def test_api_key_is_probed_before_save(self):
-        with patch("api.main._probe_runtime_config", return_value={"status": "ok", "model": "moonshot-v1-8k"}) as probe, \
-             patch("api.main._run_config_warmup") as warmup:
-            r = self.client.patch("/v1/config", headers=self.headers, json={
-                "llm_provider": "openai",
-                "backend_url": "https://api.moonshot.cn/v1",
-                "quick_think_llm": "moonshot-v1-8k",
-                "api_key": "sk-test-valid",
-            })
+        with (
+            patch("api.main._probe_runtime_config", return_value={"status": "ok", "model": "moonshot-v1-8k"}) as probe,
+            patch("api.main._run_config_warmup") as warmup,
+        ):
+            r = self.client.patch(
+                "/v1/config",
+                headers=self.headers,
+                json={
+                    "llm_provider": "openai",
+                    "backend_url": "https://api.moonshot.cn/v1",
+                    "quick_think_llm": "moonshot-v1-8k",
+                    "api_key": "sk-test-valid",
+                },
+            )
         assert r.status_code == 200
         probe.assert_called_once()
         warmup.assert_called_once()
 
     def test_invalid_api_key_is_rejected_before_save(self):
-        with patch("api.main._probe_runtime_config", side_effect=HTTPException(status_code=400, detail="模型 Key 验证失败")) as probe, \
-             patch("api.main._run_config_warmup") as warmup:
-            r = self.client.patch("/v1/config", headers=self.headers, json={
-                "llm_provider": "openai",
-                "backend_url": "https://api.moonshot.cn/v1",
-                "quick_think_llm": "moonshot-v1-8k",
-                "api_key": "sk-test-invalid",
-            })
+        with (
+            patch(
+                "api.main._probe_runtime_config", side_effect=HTTPException(status_code=400, detail="模型 Key 验证失败")
+            ) as probe,
+            patch("api.main._run_config_warmup") as warmup,
+        ):
+            r = self.client.patch(
+                "/v1/config",
+                headers=self.headers,
+                json={
+                    "llm_provider": "openai",
+                    "backend_url": "https://api.moonshot.cn/v1",
+                    "quick_think_llm": "moonshot-v1-8k",
+                    "api_key": "sk-test-invalid",
+                },
+            )
         assert r.status_code == 400
         assert "模型 Key 验证失败" in r.json()["detail"]
         probe.assert_called_once()
@@ -342,10 +411,14 @@ class TestRuntimeConfigWarmup:
 
     def test_force_warmup_schedules_even_without_model_change(self):
         with patch("api.main._run_config_warmup") as warmup:
-            r = self.client.patch("/v1/config", headers=self.headers, json={
-                "max_debate_rounds": 3,
-                "force_warmup": True,
-            })
+            r = self.client.patch(
+                "/v1/config",
+                headers=self.headers,
+                json={
+                    "max_debate_rounds": 3,
+                    "force_warmup": True,
+                },
+            )
         assert r.status_code == 200
         body = r.json()
         assert body["warmup"]["status"] == "scheduled"
@@ -353,16 +426,25 @@ class TestRuntimeConfigWarmup:
         warmup.assert_called_once()
 
     def test_manual_warmup_returns_model_reply(self):
-        with patch("api.main._invoke_runtime_warmup", return_value=[{
-            "model": "gpt-test-quick",
-            "targets": ["常规模型"],
-            "content": "你好，我已准备就绪。",
-            "error": None,
-        }]) as invoke:
-            r = self.client.post("/v1/config/warmup", headers=self.headers, json={
-                "quick_think_llm": "gpt-test-quick",
-                "prompt": "你好",
-            })
+        with patch(
+            "api.main._invoke_runtime_warmup",
+            return_value=[
+                {
+                    "model": "gpt-test-quick",
+                    "targets": ["常规模型"],
+                    "content": "你好，我已准备就绪。",
+                    "error": None,
+                }
+            ],
+        ) as invoke:
+            r = self.client.post(
+                "/v1/config/warmup",
+                headers=self.headers,
+                json={
+                    "quick_think_llm": "gpt-test-quick",
+                    "prompt": "你好",
+                },
+            )
 
         assert r.status_code == 200
         body = r.json()
@@ -377,10 +459,14 @@ class TestRuntimeConfigWarmup:
             "api.main._invoke_runtime_warmup",
             side_effect=HTTPException(status_code=400, detail="模型 warmup 失败：upstream timeout"),
         ):
-            r = self.client.post("/v1/config/warmup", headers=self.headers, json={
-                "quick_think_llm": "gpt-test-quick",
-                "prompt": "你好",
-            })
+            r = self.client.post(
+                "/v1/config/warmup",
+                headers=self.headers,
+                json={
+                    "quick_think_llm": "gpt-test-quick",
+                    "prompt": "你好",
+                },
+            )
 
         assert r.status_code == 400
         assert "模型 warmup 失败" in r.json()["detail"]
@@ -396,11 +482,15 @@ class TestWecomRuntimeConfig:
         self.headers = {"Authorization": f"Bearer {self.token}"}
 
     def test_config_returns_masked_webhook_and_toggle_state(self):
-        r = self.client.patch("/v1/config", headers=self.headers, json={
-            "wecom_webhook_url": self.WEBHOOK_URL,
-            "wecom_report_enabled": False,
-            "warmup": False,
-        })
+        r = self.client.patch(
+            "/v1/config",
+            headers=self.headers,
+            json={
+                "wecom_webhook_url": self.WEBHOOK_URL,
+                "wecom_report_enabled": False,
+                "warmup": False,
+            },
+        )
 
         assert r.status_code == 200
         body = r.json()
@@ -417,10 +507,14 @@ class TestWecomRuntimeConfig:
         assert config_resp.json()["wecom_report_enabled"] is False
 
     def test_wecom_warmup_uses_stored_webhook_when_input_missing(self):
-        save_resp = self.client.patch("/v1/config", headers=self.headers, json={
-            "wecom_webhook_url": self.WEBHOOK_URL,
-            "warmup": False,
-        })
+        save_resp = self.client.patch(
+            "/v1/config",
+            headers=self.headers,
+            json={
+                "wecom_webhook_url": self.WEBHOOK_URL,
+                "warmup": False,
+            },
+        )
         assert save_resp.status_code == 200
 
         with patch("api.services.wecom_notification_service.send_message", return_value=True) as mock_send:
@@ -436,25 +530,31 @@ class TestWecomRuntimeConfig:
 
     def test_inline_wecom_warmup_does_not_persist_unsaved_webhook(self):
         with patch("api.services.wecom_notification_service.send_message", return_value=True) as mock_send:
-            r = self.client.post("/v1/config/wecom/warmup", headers=self.headers, json={
-                "wecom_webhook_url": "inline-key-1234",
-            })
+            r = self.client.post(
+                "/v1/config/wecom/warmup",
+                headers=self.headers,
+                json={
+                    "wecom_webhook_url": "inline-key-1234",
+                },
+            )
 
         assert r.status_code == 200
         assert mock_send.call_count == 1
-        assert mock_send.call_args.args[1] == (
-            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=inline-key-1234"
-        )
+        assert mock_send.call_args.args[1] == ("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=inline-key-1234")
 
         config_resp = self.client.get("/v1/config", headers=self.headers)
         assert config_resp.status_code == 200
         assert config_resp.json()["has_wecom_webhook"] is False
 
     def test_invalid_wecom_url_is_rejected(self):
-        r = self.client.patch("/v1/config", headers=self.headers, json={
-            "wecom_webhook_url": "http://169.254.169.254/latest/meta-data/",
-            "warmup": False,
-        })
+        r = self.client.patch(
+            "/v1/config",
+            headers=self.headers,
+            json={
+                "wecom_webhook_url": "http://169.254.169.254/latest/meta-data/",
+                "warmup": False,
+            },
+        )
 
         assert r.status_code == 400
         assert "企业微信 Webhook" in r.json()["detail"]
@@ -473,11 +573,17 @@ class TestWatchlistAddEndpoint:
             "宁德时代": "300750.SZ",
         }
         code_to_name = {value: key for key, value in name_to_code.items()}
-        with patch("api.main._load_cn_stock_map", return_value=name_to_code), \
-             patch("api.main._get_reverse_stock_map", return_value=code_to_name):
-            r = self.client.post("/v1/watchlist", headers=self.headers, json={
-                "text": "600519 宁德时代, 未知标的",
-            })
+        with (
+            patch("api.main._load_cn_stock_map", return_value=name_to_code),
+            patch("api.main._get_reverse_stock_map", return_value=code_to_name),
+        ):
+            r = self.client.post(
+                "/v1/watchlist",
+                headers=self.headers,
+                json={
+                    "text": "600519 宁德时代, 未知标的",
+                },
+            )
         assert r.status_code == 200
         body = r.json()
         assert body["summary"] == {"total": 3, "added": 2, "duplicate": 0, "failed": 1}
@@ -490,11 +596,17 @@ class TestWatchlistAddEndpoint:
             "贵州茅台": "600519.SH",
         }
         code_to_name = {value: key for key, value in name_to_code.items()}
-        with patch("api.main._load_cn_stock_map", return_value=name_to_code), \
-             patch("api.main._get_reverse_stock_map", return_value=code_to_name):
-            r = self.client.post("/v1/watchlist", headers=self.headers, json={
-                "text": "600519.SH 贵州茅台",
-            })
+        with (
+            patch("api.main._load_cn_stock_map", return_value=name_to_code),
+            patch("api.main._get_reverse_stock_map", return_value=code_to_name),
+        ):
+            r = self.client.post(
+                "/v1/watchlist",
+                headers=self.headers,
+                json={
+                    "text": "600519.SH 贵州茅台",
+                },
+            )
         assert r.status_code == 200
         body = r.json()
         assert body["summary"] == {"total": 2, "added": 1, "duplicate": 1, "failed": 0}
@@ -509,11 +621,15 @@ class TestReportsEndpoint:
         self.headers = {"Authorization": f"Bearer {self.token}"}
 
     def _create_report(self, symbol: str, trade_date: str, decision: str):
-        response = self.client.post("/v1/reports", headers=self.headers, json={
-            "symbol": symbol,
-            "trade_date": trade_date,
-            "decision": decision,
-        })
+        response = self.client.post(
+            "/v1/reports",
+            headers=self.headers,
+            json={
+                "symbol": symbol,
+                "trade_date": trade_date,
+                "decision": decision,
+            },
+        )
         assert response.status_code == 200
         return response.json()
 
@@ -569,8 +685,10 @@ class TestPortfolioOverviewEndpoint:
         self.code_to_name = {value: key for key, value in self.name_to_code.items()}
 
     def _add_watchlist(self, text: str):
-        with patch("api.main._load_cn_stock_map", return_value=self.name_to_code), \
-             patch("api.main._get_reverse_stock_map", return_value=self.code_to_name):
+        with (
+            patch("api.main._load_cn_stock_map", return_value=self.name_to_code),
+            patch("api.main._get_reverse_stock_map", return_value=self.code_to_name),
+        ):
             response = self.client.post("/v1/watchlist", headers=self.headers, json={"text": text})
         assert response.status_code == 200
 
@@ -589,16 +707,24 @@ class TestPortfolioOverviewEndpoint:
         self._add_watchlist("600519.SH 300750.SZ")
         self._create_scheduled("600519.SH")
 
-        self.client.post("/v1/reports", headers=self.headers, json={
-            "symbol": "600519.SH",
-            "trade_date": "2026-03-30",
-            "decision": "BUY",
-        })
-        self.client.post("/v1/reports", headers=self.headers, json={
-            "symbol": "300750.SZ",
-            "trade_date": "2026-03-29",
-            "decision": "SELL",
-        })
+        self.client.post(
+            "/v1/reports",
+            headers=self.headers,
+            json={
+                "symbol": "600519.SH",
+                "trade_date": "2026-03-30",
+                "decision": "BUY",
+            },
+        )
+        self.client.post(
+            "/v1/reports",
+            headers=self.headers,
+            json={
+                "symbol": "300750.SZ",
+                "trade_date": "2026-03-29",
+                "decision": "SELL",
+            },
+        )
 
         current_user = self.client.get("/v1/auth/me", headers=self.headers).json()
         with get_db_ctx() as db:
@@ -700,10 +826,12 @@ class TestScheduledBatchEndpoints:
             coro.close()
             return MagicMock()
 
-        with patch("api.main._run_manual_trigger", run_once), \
-             patch("api.main._create_tracked_task", side_effect=_close_coro), \
-             patch("api.main.cn_today_str", return_value="2026-03-31"), \
-             patch("api.main._resolve_scheduled_trade_date", return_value="2026-03-31"):
+        with (
+            patch("api.main._run_manual_trigger", run_once),
+            patch("api.main._create_tracked_task", side_effect=_close_coro),
+            patch("api.main.cn_today_str", return_value="2026-03-31"),
+            patch("api.main._resolve_scheduled_trade_date", return_value="2026-03-31"),
+        ):
             response = self.client.post(
                 f"/v1/scheduled/{item['id']}/trigger",
                 headers=self.headers,
@@ -720,7 +848,7 @@ class TestScheduledBatchEndpoints:
         assert args[0]["user_id"]
         assert args[1] == "2026-03-31"
         assert args[2] == body["job_id"]
-        assert kwargs == {}   # 当前架构 _run_manual_trigger(task, requested_date, job_id)，无 mark_schedule_run
+        assert kwargs == {}  # 当前架构 _run_manual_trigger(task, requested_date, job_id)，无 mark_schedule_run
 
     def test_batch_trigger_endpoint_queues_selected_tasks_with_position_context(self):
         from api.database import ImportedPortfolioPositionDB, get_db_ctx
@@ -750,11 +878,13 @@ class TestScheduledBatchEndpoints:
             coro.close()
             return MagicMock()
 
-        with patch("api.main._run_manual_trigger", run_once), \
-             patch("api.main._create_tracked_task", side_effect=_close_coro), \
-             patch("api.main.cn_today_str", return_value="2026-03-31"), \
-             patch("api.main._resolve_scheduled_trade_date", return_value="2026-03-31"), \
-             patch("api.main._get_reverse_stock_map", return_value=self.code_to_name):
+        with (
+            patch("api.main._run_manual_trigger", run_once),
+            patch("api.main._create_tracked_task", side_effect=_close_coro),
+            patch("api.main.cn_today_str", return_value="2026-03-31"),
+            patch("api.main._resolve_scheduled_trade_date", return_value="2026-03-31"),
+            patch("api.main._get_reverse_stock_map", return_value=self.code_to_name),
+        ):
             response = self.client.post(
                 "/v1/scheduled/batch/trigger",
                 headers=self.headers,
