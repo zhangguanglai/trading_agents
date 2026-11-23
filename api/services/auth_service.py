@@ -55,6 +55,35 @@ def is_custom_secret_configured() -> bool:
     return bool(os.getenv("TA_APP_SECRET_KEY"))
 
 
+def is_production() -> bool:
+    """Treat either supported production flag as a security boundary."""
+    return os.getenv("APP_ENV", "").strip().lower() == "production" or os.getenv("ENV", "").strip().lower() in {
+        "prod",
+        "production",
+    }
+
+
+def allowed_emails() -> set[str]:
+    return {normalize_email(item) for item in os.getenv("TA_ALLOWED_EMAILS", "").split(",") if item.strip()}
+
+
+def is_email_allowed(email: str) -> bool:
+    allowed = allowed_emails()
+    if not allowed:
+        return not is_production()
+    return normalize_email(email) in allowed
+
+
+def validate_production_config() -> None:
+    """Fail closed on settings that would make a public deployment unsafe."""
+    if not is_production():
+        return
+    if not is_custom_secret_configured() or os.getenv("TA_APP_SECRET_KEY") == _DEFAULT_SECRET:
+        raise RuntimeError("TA_APP_SECRET_KEY must be set to a unique secret in production")
+    if not allowed_emails():
+        raise RuntimeError("TA_ALLOWED_EMAILS must contain at least one email in production")
+
+
 def encrypt_secret(value: str) -> str:
     return _fernet().encrypt(value.encode("utf-8")).decode("utf-8")
 
@@ -196,12 +225,17 @@ def get_env_alias(keys: list[str], default: str = "") -> str:
     return default
 
 
+def is_smtp_configured() -> bool:
+    return bool(get_env_alias(["MAIL_HOST", "MAIL_SERVER", "SMTP_HOST"]).strip())
+
+
 def send_login_code(email: str, code: str) -> Optional[str]:
     smtp_host = get_env_alias(["MAIL_HOST", "MAIL_SERVER", "SMTP_HOST"]).strip()
     if not smtp_host:
+        if is_production():
+            logger.error("[auth] SMTP is not configured; refusing to expose the login code")
+            raise RuntimeError("SMTP is not configured in production")
         logger.debug(f"[auth] login code for {email}: {code}")
-        # 无论开发环境还是生产环境，只要没有配置 SMTP，都返回验证码到前端
-        # 生产环境用户需要在 Railway 环境变量中配置 SMTP，否则验证码会显示在日志中
         return code
 
     smtp_port = int(get_env_alias(["MAIL_PORT", "SMTP_PORT"]) or "587")
@@ -234,10 +268,11 @@ def send_login_code(email: str, code: str) -> Optional[str]:
         return None
     except Exception as e:
         logger.warning(f"[auth] failed to send email via {smtp_host}: {e}")
+        if is_production():
+            logger.error("[auth] refusing to expose the login code after an SMTP failure")
+            raise RuntimeError("Failed to send login code in production") from e
         logger.warning(f"[auth] falling back to console log. code for {email}: {code}")
-        if os.getenv("APP_ENV", "development") != "production":
-            return code
-        return None
+        return code
 
 
 def get_user_llm_config(db: Session, user_id: str) -> Optional[UserLLMConfigDB]:

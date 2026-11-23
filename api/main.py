@@ -153,6 +153,7 @@ def _run_scheduled_analysis_once(
 
 from api.database import SponsorDB, FeedbackDB, init_db
 from api.database import get_db_ctx  # noqa: F401  (accessed lazily as api.main.get_db_ctx)
+from api.services.auth_service import is_production, validate_production_config
 
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: F401  (re-exported for tests / patch targets)
 from tradingagents.graph.data_collector import DataCollector
@@ -206,6 +207,8 @@ def _report_version_stats() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize resources on startup and cleanup on shutdown."""
+    validate_production_config()
+
     # 全局 socket 默认超时：akshare 等库内部的 requests 调用不传 timeout，
     # 网络丢包时 TLS 握手/读会永久阻塞，僵尸线程逐渐占满线程池（见 healthz 探针）。
     # uvicorn/asyncio 的服务端 socket 显式 setblocking(False)，不受此影响；
@@ -250,7 +253,8 @@ async def lifespan(app: FastAPI):
     init_db()
     _log("Database initialized.")
     store = get_job_store()
-    store.clear()
+    if not os.getenv("REDIS_URL"):
+        store.clear()
     _background_tasks.clear()
 
     # Security: warn loudly if using default secret key
@@ -277,7 +281,7 @@ async def lifespan(app: FastAPI):
     _log("Executor shutdown complete.")
 
 
-_is_prod = os.getenv("ENV", "").lower() == "prod"
+_is_prod = is_production()
 
 
 def _get_version() -> str:

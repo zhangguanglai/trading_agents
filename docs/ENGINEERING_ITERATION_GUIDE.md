@@ -10,16 +10,16 @@
 | 维度 | 现状 | 风险等级 |
 |---|---|---|
 | 后端分层 | `api/main.py` 已拆为 `schemas / stock_map / runtime_config / job_runtime / analysis_runner / context_helpers` + 13 个 routers + services | 中：`main.py` 仍含 `from api.schemas import *` 通配导入与大量 re-export，补丁/测试易失效 |
-| 数据库 | SQLite，`api/database.py` 用 `Base.metadata.create_all` 初始化，**无迁移工具** | **高**：加字段/改索引无法平滑升级存量库；线上镜像升级会丢列或启动即错 |
+| 数据库 | SQLite；已引入 Alembic 基线 `b135b0e1c9f4`，生产由一次性 `migrate` 容器先执行 `upgrade head` | 中：存量未版本化库必须先备份核对再 stamp；后续 schema 变更必须附新迁移 |
 | CI | `.github/workflows/ci-checks.yml`：`ruff check` + `ruff format --check` + pytest（带 `--cov-fail-under=40` 门禁，向 60→75 爬升）、npm lint + tsc（frontend）；所有 PR 与 `main` push 触发；`pytest-timeout` 防挂起；`network` 标记用例默认排除 | 中：覆盖率基线仅 ~41%，距 60/75 目标仍需补测；7 个历史用例已 `skip`/`xfail` 待修复（见 `tests/` 内标记原因） |
 | 测试 | `tests/` 27 个文件；`test_job_lifecycle` / `test_api_smoke` 等为集成测试；部分用例依赖固定邮箱、写真实 SQLite，二次运行会冲突（已在 `test_api_smoke` 局部修复） | 中：重、慢、含外部数据源风险（provider 测试会触网） |
-| 静态检查 | 仅 `ruff check`，无 `ruff format` 门禁、无 mypy | 中 |
+| 静态检查 | CI 已执行 `ruff check` 与 `ruff format --check`，Python 3.12；尚无 mypy | 中 |
 | 配置 | 运行时开关散落在 `os.getenv`，`.env.example` 已较全；`.env.local` 会被 Vite 打进生产 bundle（本地开发陷阱） | 中 |
-| 可观测 | 日志有结构化前缀，但无指标/追踪；`/healthz` 已加线程池饱和探测（本次批次 2） | 中 |
+| 可观测 | `/healthz` 负责 liveness，`/readyz` 检查 SQLite/Redis/scheduler 心跳；VPS 本机监控、企业微信状态告警和日志轮转已落地；无完整指标/追踪平台 | 中 |
 | 前端 | React + Vite + Zustand；`tsc --noEmit` 通过；无单测；无端到端/契约测试 | 中 |
 | 依赖升级 | 已有 `dependabot.yml` | 低 |
 
-**结论**：功能迭代的速度已经受限于工程基座，下一步最划算的投入是**补齐迁移、CI 门禁、测试分层、可观测性**四件事。
+**结论**：迁移、CI 门禁和基础运行监控已建立。下一步应根据真实使用数据提升覆盖率、修复历史 quarantined 测试，并持续验证发布、备份恢复和告警闭环。
 
 ---
 
@@ -45,9 +45,9 @@
 
 ### 1.3 发布节奏
 
-- 小步快跑：每周可发布。镜像 tag 用语义化版本（`pyproject.toml` 的 `version` 同步 bump）。
-- 每次合 main 后，`docker-publish.yml` 出镜像；部署前在预发跑一次冒烟（登录 → 触发一次短分析 → 查看报告）。
-- 线上问题用 `git revert` 回滚单个提交，避免 reset。
+- 小步快跑：每周可发布。发布 tag 使用稳定 `vMAJOR.MINOR.PATCH`，并与 `pyproject.toml` 的 `version` 一致。
+- 只有 tag push 触发“完整 CI → 多架构 GHCR 镜像 → production 人工审批 → digest 部署 → 冒烟”；手动 `workflow_dispatch` 只构建镜像，不部署生产。
+- 发布使用不可变 digest，失败自动尝试前一应用 digest；数据库不随应用自动回滚。线上代码修复用 `git revert`，避免 reset。
 
 ---
 
@@ -87,20 +87,17 @@ quote-style = "double"
 
 ---
 
-## 3. 数据库迁移（P0，最先做）
+## 3. 数据库迁移（已建立基线）
 
-**当前问题**：`api/database.py` 用 `Base.metadata.create_all`。新增模型字段时，已有库不会自动加列；docker 镜像升级后要么启动报错，要么静默缺字段导致写库失败。
+当前已落地：
 
-**做法（Alembic）**：
+1. Alembic 从 `DATABASE_URL` 读取连接，`migrations/env.py` 使用 `api.database.Base.metadata`，SQLite 开启 batch 模式。
+2. 基线 `b135b0e1c9f4` 覆盖现有 schema；生产 split Compose 由一次性 `migrate` 容器执行 `alembic upgrade head`，成功后 API/scheduler 才启动。
+3. CI 使用临时空库执行 `upgrade head` 与 `alembic check`，不得连接开发或生产真实数据库。
 
-1. 加依赖 `alembic`，`alembic init migrations`，配置 `alembic.ini` 的 `sqlalchemy.url` 从 `DATABASE_URL` 读取。
-2. `migrations/env.py` 里 `target_metadata = Base.metadata`，并让它自动发现所有模型（确保 import 到全部 model 模块，否则 autogenerate 会漏表）。
-3. 第一版迁移：`alembic revision --autogenerate -m "baseline"`，把**现有 schema** 固化为 baseline 版本；对已有库用 `alembic stamp head` 标记（不重复建表）。
-4. 之后每次 schema 变更：改模型 → `alembic revision --autogenerate` → **手审脚本**（autogenerate 对重命名、索引名、约束经常误判）→ 本地 `alembic upgrade head` + `downgrade -1` 验证 → 入库。
-5. `lifespan` 启动时调用 `alembic upgrade head`（或在容器 entrypoint 里先跑迁移再起服务），保证升级即迁移。
-6. 加约束：模型没有数据库级外键（架构文档已记），迁移里靠应用层保证一致性，别在迁移里贸然加 FK 导致存量数据冲突。
+后续每次 schema 变更必须执行：改模型 → 新建 revision → **人工审查 autogenerate**（重命名、索引和约束不能盲信）→ 临时库验证 upgrade/downgrade → 随功能 PR 入库。生产优先采用向后兼容的 expand-only 变更，不新增 `_ensure_*` 式运行时补丁。
 
-**测试**：加一条 CI 任务，用空库跑 `alembic upgrade head` 确保迁移链不中断。
+存量未版本化库必须先停止写入、备份并核对副本；只有结构与基线完全一致时才 `stamp b135b0e1c9f4`，不一致则先编写补偿迁移。应用 rollback 不会自动 downgrade 数据库。
 
 ---
 
@@ -121,7 +118,7 @@ quote-style = "double"
 - **禁止测试触网**：provider 测试（`test_cn_akshare_*`、`test_cn_investoday_*`）默认走 mock/fixture；需要真数据的用 `@pytest.mark.network` 标记，CI 默认 `pytest -m "not network"`，手动加 `-m network` 才跑。
 - **隔离测试 DB**：`conftest.py` 提供 `tmp_db` fixture（`tmp_path` + sqlite），避免 `test_api_smoke` 这类共享固定用户导致的二次运行 UNIQUE 冲突。
 - **超时/状态机必须有测试**：`test_job_lifecycle.py` 已是好范式（软超时→overtime→完成、硬超时→cancel、持久化失败→failed），新增调度/编排逻辑都照此写。
-- **CI 门禁**：`pytest --cov=api --cov=tradingagents --cov-fail-under=60`，从 60 起步逐步提到 75+；只对增量要求 100% 覆盖新分支。
+- **CI 门禁**：当前保持实测非回退门禁 `--cov-fail-under=40`，完整测试证明提升后再升至 60、75；新增安全和运维逻辑必须带测试。
 - **慢测试单独 job**：把 L3/L5 拆到独立 CI job 并允许手动触发，PR 主检查只跑 L1+L2，保证 PR 反馈 <3min。
 
 ---
@@ -145,8 +142,8 @@ quote-style = "double"
 
 ### 5.3 健康检查与就绪
 
-- `/healthz`（已加线程池饱和）再扩：DB 连通性、Redis 连通性（如启用）、LLM 最近一次成功调用时间（>N 分钟报警）。
-- 区分 liveness / readiness：容器编排用 liveness 重启死进程，readiness 决定是否接流量（迁移未完成、模型未 warmup 时不接流量）。
+- `/healthz` 保持轻量 liveness 和线程池探测，不因 DB/Redis/scheduler 故障反复重启 API。
+- `/readyz` 检查 SQLite `SELECT 1`、配置 Redis 时的 PING，以及 `TA_REQUIRE_SCHEDULER=1` 时不超过 180 秒的 scheduler 心跳；生产冒烟和本机监控使用该端点。
 
 ### 5.4 SLO 与告警
 
@@ -190,7 +187,7 @@ quote-style = "double"
 
 ## 8. 安全
 
-- 密钥：`TA_APP_SECRET_KEY` 缺失时已告警；生产强制校验。用户 LLM Key 加密存储（现有 cryptography），确认日志/异常 traceback 不泄露 Key。
+- 密钥：生产缺失/使用默认 `TA_APP_SECRET_KEY` 或空 `TA_ALLOWED_EMAILS` 时启动失败；生产 SMTP 失败不返回或记录验证码。用户 LLM Key 加密存储，持续检查日志和异常不泄露秘密。
 - CORS：`CORS_ALLOW_ORIGINS` 生产必须显式配置，禁止 `*`；本地开发白名单与生产分离。
 - 限流：`/v1/analyze`、登录、验证码接口加速率限制（`slowapi` 或网关层），防刷与防滥用。
 - 输入校验：所有用户输入走 Pydantic 模型（已有），符号/日期做白名单与长度限制，防注入与超大 payload。
@@ -222,10 +219,10 @@ quote-style = "double"
 
 ## 11. 优先级路线图（建议落地顺序）
 
-### P0（先做，解除迭代阻塞）
-1. **Alembic 迁移**（§3）——解除 schema 演进风险。
-2. **CI 跑全分支 + coverage 门禁 + ruff format 检查**（§1.2 / §2.1）——保证每次合入质量。
-3. **测试 DB 隔离 + 禁触网标记**（§4）——让测试可信、可重复。
+### P0（已完成基础能力，持续维护）
+1. **Alembic 基线与独立 migrate 服务**（§3）——后续变更必须附迁移。
+2. **全 PR CI + coverage 非回退门禁 + ruff format 检查**（§1.2 / §2.1）——保持每次合入质量。
+3. **测试 DB 隔离 + 默认禁触网**（§4）——继续修复历史 skip/xfail，提升可信覆盖率。
 
 ### P1（1–2 个月内）
 4. **可观测性：结构化日志 + 核心指标 + /metrics + 告警**（§5）。

@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import api.main as _api_main
 from api.database import VersionStatsDB, get_db
 from api.dependencies import _get_real_ip, _require_api_user
+from api.scheduler_heartbeat import scheduler_heartbeat_status
 from api.main import (
     BacktestRequest,
     SponsorItem,
@@ -48,6 +51,39 @@ async def healthz():
         payload["status"] = "thread_pool_starved"
         return JSONResponse(status_code=503, content=payload)
     return payload
+
+
+@router.get("/readyz")
+def readyz(db: Session = Depends(get_db)):
+    """Report whether the API can serve traffic and its required peers are ready."""
+    checks: Dict[str, Any] = {}
+    try:
+        db.execute(text("SELECT 1"))
+        checks["database"] = {"status": "ok"}
+    except Exception as exc:
+        checks["database"] = {"status": "error", "error": type(exc).__name__}
+
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if redis_url:
+        redis_client = None
+        try:
+            import redis
+
+            redis_client = redis.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+            redis_client.ping()
+            checks["redis"] = {"status": "ok"}
+        except Exception as exc:
+            checks["redis"] = {"status": "error", "error": type(exc).__name__}
+        finally:
+            if redis_client is not None:
+                redis_client.close()
+
+    if os.getenv("TA_REQUIRE_SCHEDULER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        checks["scheduler"] = scheduler_heartbeat_status()
+
+    is_ready = all(check["status"] == "ok" for check in checks.values())
+    payload = {"status": "ok" if is_ready else "not_ready", "checks": checks}
+    return JSONResponse(status_code=200 if is_ready else 503, content=payload)
 
 
 @router.post("/api/version-stats")

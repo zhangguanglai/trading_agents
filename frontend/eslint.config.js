@@ -47,6 +47,12 @@ export default [
             ...js.configs.recommended.rules,
             ...tsPlugin.configs.recommended.rules,
             ...reactHooks.configs.recommended.rules,
+            // Keep the classic Hooks rules blocking. The v7 preset also enables
+            // React Compiler checks on legacy components; ratchet these down separately.
+            'react-hooks/purity': 'warn',
+            'react-hooks/refs': 'warn',
+            'react-hooks/set-state-in-effect': 'warn',
+            'react-hooks/immutability': 'warn',
             'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
             // TypeScript handles these better
             'no-unused-vars': 'off',

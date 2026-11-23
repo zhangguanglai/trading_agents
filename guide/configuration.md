@@ -30,7 +30,8 @@
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| **`TA_APP_SECRET_KEY`** | （空，不安全） | 加密用户 LLM API Key、签发登录 JWT 的主密钥。**生产环境必须设置**，生成：`openssl rand -base64 32`。首次设置会自动把已有数据从默认密钥迁移到新密钥；设置后不可更改 |
+| **`TA_APP_SECRET_KEY`** | （空，不安全） | 加密用户 LLM API Key、签发登录 JWT 的主密钥。**生产环境必须设置且不能使用开发默认值**，生成：`openssl rand -base64 32`。首次设置会自动把已有数据从默认密钥迁移到新密钥；设置后不可更改 |
+| **`TA_ALLOWED_EMAILS`** | （空） | 允许请求验证码和登录的邮箱，逗号分隔、忽略大小写。生产为空时服务拒绝启动；开发为空时不限制邮箱。请求验证码和校验验证码都会检查 |
 
 ## 分析行为
 
@@ -55,7 +56,9 @@
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `SCHEDULER_CONCURRENCY` | `3` | 定时分析并发数（scheduler 进程内的信号量） |
+| `SCHEDULER_CONCURRENCY` | `3`；生产 split Compose 为 `2` | 定时分析并发数（scheduler 进程内的信号量） |
+| `SCHEDULER_HEARTBEAT_FILE` | `data/scheduler_heartbeat.json` | scheduler 每轮循环原子写入 UTC 时间、PID、版本；生产 split Compose 设为 `/app/data/scheduler_heartbeat.json` |
+| `TA_REQUIRE_SCHEDULER` | （空） | 设为真时 `/readyz` 要求心跳存在且不超过 180 秒；生产 split Compose 为 `1`。`/healthz` 不检查该项 |
 
 ## 容器角色（Docker 入口）
 
@@ -77,7 +80,7 @@
 
 ## 邮件服务（SMTP）
 
-用于邮箱验证码登录与分析报告邮件推送。不配置 `MAIL_HOST` 则邮件功能整体关闭：登录验证码打印到后端日志，非生产环境（`APP_ENV≠production`）下还会直接返回给前端展示。
+用于邮箱验证码登录与分析报告邮件推送。生产环境必须配置 SMTP：未配置或发送失败时请求验证码返回 503，验证码不会返回前端，也不会写入后端日志。仅非生产环境保留开发验证码返回/日志回退行为。
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -126,6 +129,6 @@
 | `ASYNCIO_DEFAULT_EXECUTOR_WORKERS` | `64` | `asyncio.to_thread` 默认线程池大小；scheduler 进程为 `max(64, 并发数×16)` |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
 | `TA_MAX_WORKERS` | `2` | API 进程内预留的小型线程池（当前代码基本未使用），无需调整 |
-| `ENV` | （空） | 设为 `prod` 时关闭 `/docs`、`/redoc`、`/openapi.json` |
-| `APP_ENV` | `development` | 设为 `production` 时，未配置 SMTP 的登录验证码不再返回给前端展示（仍会打印到后端日志） |
+| `ENV` | （空） | 设为 `prod` 或 `production` 即进入生产安全行为，并关闭 `/docs`、`/redoc`、`/openapi.json` |
+| `APP_ENV` | `development` | 设为 `production` 即进入生产安全行为：强制自定义密钥和邮箱白名单，生产 SMTP 失败不泄露验证码 |
 | `APP_VERSION` | 镜像构建注入 | 版本号，一般由 CI 通过 `--build-arg VERSION=` 设置 |

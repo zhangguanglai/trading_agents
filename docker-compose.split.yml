@@ -1,67 +1,111 @@
-# 分开部署一键启动：API、定时任务调度器、Redis 各自独立容器。
-#
-# 用法：
-#   export TA_APP_SECRET_KEY=$(openssl rand -base64 32)
-#   docker compose -f docker-compose.split.yml up -d
-#
-# 两个应用容器通过 TA_DISABLE_* 选择角色（见 guide/deployment.md），
-# 通过共享数据卷与 REDIS_URL 共享任务状态。
-# 注意：同一数据库不要在这套 compose 之外再运行其他调度器实例。
+# 生产分角色部署：一次性迁移、Redis、API、调度器。
+# 在 /opt/tradingagents 下使用：
+#   docker compose --env-file .env --env-file release.env -f docker-compose.split.yml up -d
+# IMAGE_REF 必须是不可变镜像摘要；同一数据库绝不能额外运行第二个调度器。
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-application: &application
+  image: ${IMAGE_REF:?Set IMAGE_REF to an immutable ghcr.io image digest in release.env}
+  env_file:
+    - .env
+  volumes:
+    - /var/lib/tradingagents/data:/app/data
+    - /var/lib/tradingagents/uploads:/app/uploads
+  logging: *default-logging
+  # 2C/1.6GiB 低内存主机：限制单容器上限，超限部分走宿主 swap，避免整机 OOM。
+  # memswap_limit 为内存+swap 总上限，必须显式设置，否则默认仅有内存上限。
 
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     container_name: tradingagents-redis
-    restart: always
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     volumes:
-      - redis-data:/data
+      - /var/lib/tradingagents/redis:/data
+    mem_limit: 128m
+    memswap_limit: 256m
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 10s
       timeout: 3s
       retries: 10
+      start_period: 10s
+    logging: *default-logging
+
+  migrate:
+    <<: *application
+    container_name: tradingagents-migrate
+    restart: "no"
+    command: ["/app/.venv/bin/alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: sqlite:///./data/tradingagents.db
 
   api:
-    image: ghcr.io/kylinmountain/tradingagents-ashare:latest
-    # 从源码构建镜像时：注释掉上面的 image，改用下行
-    # build: .
+    <<: *application
     container_name: tradingagents-api
-    restart: always
+    restart: unless-stopped
     ports:
       - "8000:8000"
-    volumes:
-      - ./data:/app/data
     depends_on:
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 900m
+    memswap_limit: 1800m
     environment:
+      APP_ENV: production
+      ENV: prod
       DATABASE_URL: sqlite:///./data/tradingagents.db
       REDIS_URL: redis://redis:6379/0
       TA_DISABLE_SCHEDULER: "1"
-      TA_APP_SECRET_KEY: ${TA_APP_SECRET_KEY:?请先设置 TA_APP_SECRET_KEY，如 export TA_APP_SECRET_KEY=$(openssl rand -base64 32)}
-      # 常用可选变量（取消注释并填值；完整清单见 guide/configuration.md）：
-      # TA_API_KEY: "你的 LLM API Key"
-      # TA_BASE_URL: "https://api.openai.com/v1"
-      # TA_LLM_PROVIDER: "openai"
-      # MAIL_HOST: "smtp.gmail.com"
+      TA_REQUIRE_SCHEDULER: "1"
+      MALLOC_ARENA_MAX: "2"
+      ASYNCIO_DEFAULT_EXECUTOR_WORKERS: "16"
+      TA_APP_SECRET_KEY: ${TA_APP_SECRET_KEY:?Set TA_APP_SECRET_KEY in .env}
+      TA_ALLOWED_EMAILS: ${TA_ALLOWED_EMAILS:?Set TA_ALLOWED_EMAILS in .env}
+      SCHEDULER_HEARTBEAT_FILE: /app/data/scheduler_heartbeat.json
+      UPLOAD_DIR: /app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
 
   scheduler:
-    image: ghcr.io/kylinmountain/tradingagents-ashare:latest
-    # 从源码构建镜像时：注释掉上面的 image，改用下行
-    # build: .
+    <<: *application
     container_name: tradingagents-scheduler
-    restart: always
-    volumes:
-      - ./data:/app/data
+    restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 500m
+    memswap_limit: 1000m
     environment:
+      APP_ENV: production
+      ENV: prod
       DATABASE_URL: sqlite:///./data/tradingagents.db
       REDIS_URL: redis://redis:6379/0
       TA_DISABLE_API: "1"
-      SCHEDULER_CONCURRENCY: "3"
-      TA_APP_SECRET_KEY: ${TA_APP_SECRET_KEY:?请先设置 TA_APP_SECRET_KEY，如 export TA_APP_SECRET_KEY=$(openssl rand -base64 32)}
-
-volumes:
-  redis-data:
+      SCHEDULER_CONCURRENCY: "1"
+      MALLOC_ARENA_MAX: "2"
+      ASYNCIO_DEFAULT_EXECUTOR_WORKERS: "16"
+      TA_APP_SECRET_KEY: ${TA_APP_SECRET_KEY:?Set TA_APP_SECRET_KEY in .env}
+      TA_ALLOWED_EMAILS: ${TA_ALLOWED_EMAILS:?Set TA_ALLOWED_EMAILS in .env}
+      SCHEDULER_HEARTBEAT_FILE: /app/data/scheduler_heartbeat.json
+      UPLOAD_DIR: /app/uploads
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-m", "api.scheduler_heartbeat"]
+      interval: 30s
+      timeout: 5s
+      retries: 4
+      start_period: 240s

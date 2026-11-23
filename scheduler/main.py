@@ -75,6 +75,7 @@ from api.services import (
     report_service,
     scheduled_service,
 )
+from api.scheduler_heartbeat import write_scheduler_heartbeat
 
 # Thin wrappers & job runner from the API module
 from api.services.job_service import (
@@ -278,6 +279,7 @@ async def _scheduler_loop():
 
     _log("[Scheduler] Loop started.")
     while True:
+        write_scheduler_heartbeat()
         await asyncio.sleep(60)
         try:
             now = datetime.now(tz=ZoneInfo("Asia/Shanghai"))
@@ -368,6 +370,9 @@ def _recover_stale_tasks():
 async def _startup():
     """Initialize DB, pre-load caches, recover stale tasks, then run the loop."""
     global _semaphore, _executor
+
+    auth_service.validate_production_config()
+    write_scheduler_heartbeat()
 
     # Each scheduled `_run_job` fans out many `asyncio.to_thread` calls (DB
     # writes, akshare data collection, LLM extraction). The CPython default

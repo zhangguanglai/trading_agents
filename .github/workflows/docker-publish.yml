@@ -1,25 +1,50 @@
-name: Build and Publish Docker Image
+name: Build, Publish and Deploy
 
 on:
   push:
-    tags: [ 'v*' ]
-  workflow_dispatch: # 允许手动触发
+    tags: ["v*"]
+  workflow_dispatch: # 手动构建只发布带分支/SHA 标签的镜像，不部署生产
+
+permissions:
+  contents: read
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/tradingagents-ashare
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  verify:
+    uses: ./.github/workflows/ci-checks.yml
+
   build:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-ref: ${{ steps.image-ref.outputs.ref }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Check release tag matches project version
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          project_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Production tags must use vMAJOR.MINOR.PATCH: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          if [[ "${tag_version}" != "${project_version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match pyproject version ${project_version}" >&2
+            exit 1
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -28,7 +53,6 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log into registry ${{ env.REGISTRY }}
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4.5.2
         with:
           registry: ${{ env.REGISTRY }}
@@ -39,27 +63,74 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository_owner }}/tradingagents-ashare
+          images: ${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha,format=short
             type=match,pattern=^v[0-9]+\.[0-9]+\.[0-9]+$,group=0,value=latest
 
-      - name: Inspect Tags
-        run: |
-          echo "The following tags will be generated:"
-          echo "${{ steps.meta.outputs.tags }}"
-
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Export immutable image reference
+        id: image-ref
+        shell: bash
+        run: echo "ref=${IMAGE_NAME}@${{ steps.build.outputs.digest }}" >> "${GITHUB_OUTPUT}"
+
+  deploy-production:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Deploy immutable image over verified SSH
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          IMAGE_REF: ${{ needs.build.outputs.image-ref }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?}" "${VPS_USER:?}" "${VPS_SSH_PRIVATE_KEY:?}" "${VPS_SSH_HOST_KEY:?}"
+          : "${GHCR_USERNAME:?}" "${GHCR_READ_TOKEN:?}" "${IMAGE_REF:?}"
+
+          ssh_dir="${RUNNER_TEMP}/tradingagents-ssh"
+          mkdir -p "${ssh_dir}"
+          chmod 700 "${ssh_dir}"
+          printf '%s\n' "${VPS_SSH_PRIVATE_KEY}" > "${ssh_dir}/id_ed25519"
+          printf '%s\n' "${VPS_SSH_HOST_KEY}" > "${ssh_dir}/known_hosts"
+          chmod 600 "${ssh_dir}/id_ed25519" "${ssh_dir}/known_hosts"
+
+          ssh_options=(-i "${ssh_dir}/id_ed25519" -o IdentitiesOnly=yes -o UserKnownHostsFile="${ssh_dir}/known_hosts" -o StrictHostKeyChecking=yes)
+          remote="${VPS_USER}@${VPS_HOST}"
+          bundle="${RUNNER_TEMP}/tradingagents-ops.tar.gz"
+          remote_bundle="/tmp/tradingagents-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
+
+          tar -czf "${bundle}" docker-compose.split.yml scripts
+          scp "${ssh_options[@]}" "${bundle}" "${remote}:${remote_bundle}"
+          ssh "${ssh_options[@]}" "${remote}" "set -Eeuo pipefail; mkdir -p /opt/tradingagents/scripts; tar -xzf '${remote_bundle}' -C /opt/tradingagents; rm -f '${remote_bundle}'; chmod 700 /opt/tradingagents/scripts/vps_deploy.sh"
+          printf '%s' "${GHCR_READ_TOKEN}" | ssh "${ssh_options[@]}" "${remote}" "docker login ghcr.io --username '${GHCR_USERNAME}' --password-stdin"
+          ssh "${ssh_options[@]}" "${remote}" "cd /opt/tradingagents && ./scripts/vps_deploy.sh deploy '${IMAGE_REF}'"
