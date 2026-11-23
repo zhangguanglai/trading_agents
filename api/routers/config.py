@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from api.database import UserDB, get_db
@@ -126,9 +126,14 @@ def update_runtime_config(
         if v is not None
         and k not in {"api_key", "wecom_webhook_url", "warmup", "force_warmup"}
         and (
-            k in {
-                "llm_provider", "deep_think_llm", "quick_think_llm",
-                "backend_url", "max_debate_rounds", "max_risk_discuss_rounds",
+            k
+            in {
+                "llm_provider",
+                "deep_think_llm",
+                "quick_think_llm",
+                "backend_url",
+                "max_debate_rounds",
+                "max_risk_discuss_rounds",
             }
             or k in {"email_report_enabled", "wecom_report_enabled"}
             or (k in {"clear_api_key", "clear_wecom_webhook"} and bool(v))

@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 import { execSync } from 'node:child_process'
 
-const API_PROXY_URL = process.env.API_PROXY_URL || API_PROXY_URL
+const API_PROXY_URL = process.env.API_PROXY_URL || 'http://127.0.0.1:8000'
 
 function runGit(cmd: string): string {
   try {

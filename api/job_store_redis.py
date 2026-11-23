@@ -4,6 +4,7 @@ Uses Redis Hash for job state and Pub/Sub for real-time SSE event delivery,
 enabling multi-worker API deployment where all uvicorn workers share the same
 job state and event stream.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,7 +33,7 @@ def _serialize_value(v: Any) -> str:
     """Serialize a Python value for storage in a Redis Hash field."""
     if v is None:
         return ""
-    if isinstance(v, (dict, list)):
+    if isinstance(v, (dict, list, bool)):
         return json.dumps(v, ensure_ascii=False)
     return str(v)
 
@@ -58,9 +59,7 @@ class RedisJobStore:
 
     def __init__(self, redis_url: str, prefix: str = "ta:") -> None:
         self._prefix = prefix
-        self._r: redis.Redis = redis.Redis.from_url(
-            redis_url, decode_responses=True
-        )
+        self._r: redis.Redis = redis.Redis.from_url(redis_url, decode_responses=True)
         # Verify connectivity once at creation
         self._r.ping()
         logger.info("RedisJobStore connected to %s (prefix=%r)", redis_url, prefix)
@@ -78,7 +77,7 @@ class RedisJobStore:
     def set_job(self, job_id: str, **fields: Any) -> None:
         """Create or update job fields (merge semantics).
 
-        Complex values (dict/list) are JSON-serialized; None becomes empty string.
+        Complex values and booleans are JSON-serialized; None becomes empty string.
         Each call refreshes the TTL.
         """
         if not fields:
@@ -112,9 +111,7 @@ class RedisJobStore:
         }
         self._r.publish(self._channel_key(job_id), json.dumps(payload, ensure_ascii=False))
 
-    async def subscribe(
-        self, job_id: str, *, poll_interval: float = 8.0
-    ) -> AsyncIterator[Dict[str, Any]]:
+    async def subscribe(self, job_id: str, *, poll_interval: float = 8.0) -> AsyncIterator[Dict[str, Any]]:
         """Async generator yielding events for *job_id*.
 
         Internally spins up a background thread running the blocking Redis

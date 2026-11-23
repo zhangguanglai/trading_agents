@@ -19,7 +19,6 @@ from api.main import (
     _annotate_scheduled_with_imported_context,
     _attach_stock_names,
     _build_manual_imported_user_context,
-    _build_scheduled_analyze_request,
     _emit_job_event,
     _extract_scheduled_update_kwargs,
     _get_reverse_stock_map_cached_only,
@@ -27,7 +26,6 @@ from api.main import (
     _utcnow_iso,
 )
 from api.services import scheduled_service
-from tradingagents.dataflows.trade_calendar import cn_today_str
 
 router = APIRouter(tags=["scheduled"])
 
@@ -110,15 +108,12 @@ async def trigger_scheduled_analyses_batch(
     if not body.item_ids:
         raise HTTPException(400, "请至少选择 1 个定时任务")
 
-    requested_trade_date = cn_today_str()
+    requested_trade_date = _main.cn_today_str()
     actual_trade_date = _main._resolve_scheduled_trade_date(requested_trade_date)
     code_to_name = _main._get_reverse_stock_map()
     jobs: List[Dict[str, Any]] = []
     with_position_context = 0
-    available_tasks = {
-        task["id"]: task
-        for task in scheduled_service.list_scheduled(db, current_user.id)
-    }
+    available_tasks = {task["id"]: task for task in scheduled_service.list_scheduled(db, current_user.id)}
     valid_item_ids = []
     missing_item_ids = []
     for raw_item_id in body.item_ids:
@@ -135,9 +130,8 @@ async def trigger_scheduled_analyses_batch(
 
     if missing_item_ids:
         from api.main import _log
-        _log(
-            f"[Scheduled Batch Trigger] user={current_user.id} skipped missing item_ids={missing_item_ids}"
-        )
+
+        _log(f"[Scheduled Batch Trigger] user={current_user.id} skipped missing item_ids={missing_item_ids}")
 
     for item_id in valid_item_ids:
         task = available_tasks[item_id]
@@ -175,16 +169,18 @@ async def trigger_scheduled_analyses_batch(
             )
         )
 
-        jobs.append({
-            "item_id": task["id"],
-            "job_id": job_id,
-            "symbol": task["symbol"],
-            "name": code_to_name.get(task["symbol"], task["symbol"]),
-            "status": "pending",
-            "created_at": now,
-            "current_position": scheduled_user_context.get("current_position"),
-            "average_cost": scheduled_user_context.get("average_cost"),
-        })
+        jobs.append(
+            {
+                "item_id": task["id"],
+                "job_id": job_id,
+                "symbol": task["symbol"],
+                "name": code_to_name.get(task["symbol"], task["symbol"]),
+                "status": "pending",
+                "created_at": now,
+                "current_position": scheduled_user_context.get("current_position"),
+                "average_cost": scheduled_user_context.get("average_cost"),
+            }
+        )
 
     return {
         "summary": {
@@ -205,7 +201,7 @@ async def trigger_scheduled_analysis_once(
     if task is None:
         raise HTTPException(404, "未找到该定时任务")
 
-    requested_trade_date = cn_today_str()
+    requested_trade_date = _main.cn_today_str()
     actual_trade_date = _main._resolve_scheduled_trade_date(requested_trade_date)
     now = _utcnow_iso()
     job_id = uuid4().hex

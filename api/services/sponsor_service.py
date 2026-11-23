@@ -4,6 +4,7 @@ Sponsor records are managed by the admin project directly in the database.
 This service only provides read access for the public-facing thanks page.
 The `amount` field is intentionally excluded from all public queries.
 """
+
 from __future__ import annotations
 
 import logging

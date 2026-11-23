@@ -5,7 +5,20 @@ import os
 from datetime import datetime, timezone
 from typing import Generator
 
-from sqlalchemy import Boolean, create_engine, Column, String, DateTime, Text, Integer, Float, JSON, UniqueConstraint, event, text
+from sqlalchemy import (
+    Boolean,
+    create_engine,
+    Column,
+    String,
+    DateTime,
+    Text,
+    Integer,
+    Float,
+    JSON,
+    UniqueConstraint,
+    event,
+    text,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 # Database URL - default to SQLite for simplicity
@@ -26,6 +39,7 @@ if DATABASE_URL.startswith("sqlite"):
     def _can_use_wal() -> bool:
         """Check if WAL mode is safe: db's parent dir must be writable for -shm/-wal files."""
         import pathlib
+
         db_path = DATABASE_URL.replace("sqlite:///", "").replace("sqlite://", "")
         parent = pathlib.Path(db_path).resolve().parent
         return os.access(parent, os.W_OK)
@@ -145,7 +159,9 @@ def _ensure_user_schema() -> None:
 
 def _migrate_tokens_to_hashed() -> None:
     """Migrate plaintext API tokens to HMAC-SHA256 hashed storage."""
-    import hashlib, hmac
+    import hashlib
+    import hmac
+
     try:
         with engine.begin() as conn:
             # Add token_hint column if missing
@@ -158,6 +174,7 @@ def _migrate_tokens_to_hashed() -> None:
             if not rows:
                 return
             from api.services.auth_service import _secret_key
+
             key = _secret_key().encode("utf-8")
             for row_id, plaintext in rows:
                 token_hash = hmac.new(key, plaintext.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -179,9 +196,12 @@ def _migrate_api_keys_reencrypt() -> None:
     If the default key works, re-encrypts with the current key and writes back.
     """
     from api.services.auth_service import (
-        is_custom_secret_configured, decrypt_secret,
-        decrypt_secret_with_fallback, encrypt_secret,
+        is_custom_secret_configured,
+        decrypt_secret,
+        decrypt_secret_with_fallback,
+        encrypt_secret,
     )
+
     if not is_custom_secret_configured():
         return
     try:
@@ -242,32 +262,32 @@ def _migrate_api_keys_reencrypt() -> None:
 # Report Model
 class ReportDB(Base):
     """Report database model."""
-    
+
     __tablename__ = "reports"
-    
+
     id = Column(String(36), primary_key=True, index=True)
     user_id = Column(String(64), index=True, nullable=True)  # For future multi-user support
     symbol = Column(String(20), index=True, nullable=False)
     trade_date = Column(String(10), nullable=False)
-    
+
     # Task lifecycle info
     status = Column(String(20), default="completed", index=True)  # pending, running, completed, failed
     error = Column(Text, nullable=True)
-    
+
     # Decision info
     decision = Column(String(50), nullable=True)  # BUY, SELL, HOLD, etc.
     direction = Column(String(50), nullable=True)  # 看多、偏多、中性、偏空、看空
     confidence = Column(Integer, nullable=True)  # 0-100
     target_price = Column(Float, nullable=True)
     stop_loss_price = Column(Float, nullable=True)
-    
+
     # Full analysis results stored as JSON
     result_data = Column(JSON, nullable=True)
 
     # LLM-extracted structured data
-    risk_items = Column(JSON, nullable=True)   # [{"name": "...", "level": "high|medium|low", "description": "..."}]
+    risk_items = Column(JSON, nullable=True)  # [{"name": "...", "level": "high|medium|low", "description": "..."}]
     key_metrics = Column(JSON, nullable=True)  # [{"name": "...", "value": "...", "status": "good|neutral|bad"}]
-    analyst_traces = Column(JSON, nullable=True) # [{"agent": "...", "verdict": "...", "key_finding": "..."}]
+    analyst_traces = Column(JSON, nullable=True)  # [{"agent": "...", "verdict": "...", "key_finding": "..."}]
 
     # Individual reports (for quick access)
     market_report = Column(Text, nullable=True)
@@ -281,11 +301,13 @@ class ReportDB(Base):
     investment_plan = Column(Text, nullable=True)
     trader_investment_plan = Column(Text, nullable=True)
     final_trade_decision = Column(Text, nullable=True)
-    
+
     # Metadata
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
@@ -325,7 +347,9 @@ class UserDB(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
     last_login_at = Column(DateTime, nullable=True)
     last_login_ip = Column(String(45), nullable=True)
     email_report_enabled = Column(Boolean, default=True, nullable=False, server_default="1")
@@ -358,7 +382,9 @@ class UserLLMConfigDB(Base):
     wecom_webhook_encrypted = Column(Text, nullable=True)
     default_analysts = Column(Text, nullable=True)  # JSON list, e.g. '["market","social",...]'
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
 
 
 class UserTokenDB(Base):
@@ -386,6 +412,7 @@ class VersionStatsDB(Base):
 
 class WatchlistItemDB(Base):
     """User watchlist items."""
+
     __tablename__ = "watchlist_items"
 
     id = Column(String(36), primary_key=True)
@@ -394,11 +421,12 @@ class WatchlistItemDB(Base):
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    __table_args__ = (UniqueConstraint('user_id', 'symbol', name='uq_watchlist_user_symbol'),)
+    __table_args__ = (UniqueConstraint("user_id", "symbol", name="uq_watchlist_user_symbol"),)
 
 
 class ScheduledAnalysisDB(Base):
     """Scheduled daily analysis tasks."""
+
     __tablename__ = "scheduled_analyses"
 
     id = Column(String(36), primary_key=True)
@@ -412,13 +440,16 @@ class ScheduledAnalysisDB(Base):
     last_report_id = Column(String(36), nullable=True)
     consecutive_failures = Column(Integer, default=0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
 
-    __table_args__ = (UniqueConstraint('user_id', 'symbol', name='uq_scheduled_user_symbol'),)
+    __table_args__ = (UniqueConstraint("user_id", "symbol", name="uq_scheduled_user_symbol"),)
 
 
 class SponsorDB(Base):
     """Sponsor records managed by admin project."""
+
     __tablename__ = "sponsors"
 
     id = Column(String(36), primary_key=True, index=True)
@@ -427,17 +458,20 @@ class SponsorDB(Base):
     github = Column(String(100), nullable=True)
     avatar = Column(String(500), nullable=True)
     email = Column(String(255), nullable=True)
-    provider = Column(String(100), nullable=True)       # token sponsor: provider name
-    amount = Column(Float, nullable=True)                # admin-only, NOT exposed in public API
+    provider = Column(String(100), nullable=True)  # token sponsor: provider name
+    amount = Column(Float, nullable=True)  # admin-only, NOT exposed in public API
     date = Column(String(10), nullable=False)
     sort_order = Column(Integer, default=0)
     is_visible = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
 
 
 class FeedbackDB(Base):
     """User feedback / message board."""
+
     __tablename__ = "feedbacks"
 
     id = Column(String(36), primary_key=True, index=True)
@@ -449,7 +483,9 @@ class FeedbackDB(Base):
     replied_at = Column(DateTime, nullable=True)
     is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
 
 
 class ImportedPortfolioPositionDB(Base):
@@ -473,10 +509,8 @@ class ImportedPortfolioPositionDB(Base):
     latest_trade_action = Column(String(16), nullable=True)
     last_imported_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint('user_id', 'source', 'symbol', name='uq_imported_portfolio_user_source_symbol'),
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
 
-
+    __table_args__ = (UniqueConstraint("user_id", "source", "symbol", name="uq_imported_portfolio_user_source_symbol"),)

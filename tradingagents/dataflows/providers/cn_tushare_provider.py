@@ -2,7 +2,6 @@ import os
 import json
 import time
 import logging
-from typing import Optional
 
 import pandas as pd
 
@@ -28,14 +27,13 @@ class CnTushareProvider(BaseMarketDataProvider):
             return
         try:
             import tushare as ts
+
             if not self._token:
                 raise RuntimeError("TUSHARE_TOKEN environment variable is not set")
             ts.set_token(self._token)
             self._ts = ts.pro_api()
         except ImportError:
-            raise RuntimeError(
-                "cn_tushare requires 'tushare'. Install it with: pip install tushare"
-            )
+            raise RuntimeError("cn_tushare requires 'tushare'. Install it with: pip install tushare")
 
     def _call_with_retry(self, func, *args, **kwargs) -> pd.DataFrame | None:
         """Call Tushare API with retry logic for transient connection errors."""
@@ -49,8 +47,10 @@ class CnTushareProvider(BaseMarketDataProvider):
                 # Only retry on transient network errors
                 if any(kw in str(exc).lower() for kw in ["connection", "timeout", "reset", "network", "socket"]):
                     if attempt < self._max_retries:
-                        delay = self._retry_delay * (2 ** attempt)
-                        logger.warning(f"[Tushare] Retry {attempt + 1}/{self._max_retries} after {delay:.1f}s ({type(exc).__name__})")
+                        delay = self._retry_delay * (2**attempt)
+                        logger.warning(
+                            f"[Tushare] Retry {attempt + 1}/{self._max_retries} after {delay:.1f}s ({type(exc).__name__})"
+                        )
                         time.sleep(delay)
                         continue
                 break
@@ -106,29 +106,27 @@ class CnTushareProvider(BaseMarketDataProvider):
             if df is None or df.empty:
                 return json.dumps({"error": f"No data for {symbol}"})
             # Rename columns to standard format
-            df = df.rename(columns={
-                "trade_date": "date",
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "close": "close",
-                "vol": "volume",
-                "amount": "amount",
-            })
+            df = df.rename(
+                columns={
+                    "trade_date": "date",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "close": "close",
+                    "vol": "volume",
+                    "amount": "amount",
+                }
+            )
             df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
             return df.to_json(orient="records", date_format="iso")
         except Exception as e:
             return json.dumps({"error": f"cn_tushare failed: {str(e)}"})
 
-    def get_indicators(
-        self, symbol: str, indicator: str, curr_date: str, look_back_days: int
-    ) -> str:
+    def get_indicators(self, symbol: str, indicator: str, curr_date: str, look_back_days: int) -> str:
         self._init_ts()
         # Tushare does not have a direct indicator API, return stock data for calculation
         start = pd.to_datetime(curr_date) - pd.Timedelta(days=look_back_days * 2)
-        return self.get_stock_data(
-            symbol, start.strftime("%Y-%m-%d"), curr_date
-        )
+        return self.get_stock_data(symbol, start.strftime("%Y-%m-%d"), curr_date)
 
     def get_fundamentals(self, ticker: str, curr_date: str = None) -> str:
         self._init_ts()
@@ -144,9 +142,7 @@ class CnTushareProvider(BaseMarketDataProvider):
         except Exception as e:
             return json.dumps({"error": f"cn_tushare fundamentals failed: {str(e)}"})
 
-    def get_balance_sheet(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_balance_sheet(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         self._init_ts()
         if self._is_hk_stock(ticker):
             return json.dumps({"info": "cn_tushare HK balance sheet not available"})
@@ -159,9 +155,7 @@ class CnTushareProvider(BaseMarketDataProvider):
         except Exception as e:
             return json.dumps({"error": f"cn_tushare balance sheet failed: {str(e)}"})
 
-    def get_cashflow(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_cashflow(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         self._init_ts()
         if self._is_hk_stock(ticker):
             return json.dumps({"info": "cn_tushare HK cashflow not available"})
@@ -174,9 +168,7 @@ class CnTushareProvider(BaseMarketDataProvider):
         except Exception as e:
             return json.dumps({"error": f"cn_tushare cashflow failed: {str(e)}"})
 
-    def get_income_statement(
-        self, ticker: str, freq: str = "quarterly", curr_date: str = None
-    ) -> str:
+    def get_income_statement(self, ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
         self._init_ts()
         if self._is_hk_stock(ticker):
             return json.dumps({"info": "cn_tushare HK income statement not available"})
@@ -194,9 +186,7 @@ class CnTushareProvider(BaseMarketDataProvider):
         # Tushare news API requires higher permissions
         return json.dumps({"info": "cn_tushare news requires higher permission level"})
 
-    def get_global_news(
-        self, curr_date: str, look_back_days: int = 7, limit: int = 50
-    ) -> str:
+    def get_global_news(self, curr_date: str, look_back_days: int = 7, limit: int = 50) -> str:
         self._init_ts()
         return json.dumps({"info": "cn_tushare global news not implemented"})
 
@@ -252,7 +242,7 @@ class CnTushareProvider(BaseMarketDataProvider):
                 return f"{symbol} 近期主力资金流向数据暂不可用。"
             df_recent = df.tail(5)
             return f"{symbol} 近5日主力资金净流向：\n{df_recent.to_string(index=False)}"
-        except Exception as e:
+        except Exception:
             return None
 
     def get_lhb_detail(self, symbol: str, date: str) -> str:
@@ -266,7 +256,7 @@ class CnTushareProvider(BaseMarketDataProvider):
             if df is None or df.empty:
                 return f"{symbol} 在 {date} 无龙虎榜数据（非异动日属正常）。"
             return f"{symbol} 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
-        except Exception as e:
+        except Exception:
             return None
 
     def get_board_fund_flow(self) -> str:
@@ -277,7 +267,7 @@ class CnTushareProvider(BaseMarketDataProvider):
             if df is None or df.empty:
                 return "今日板块资金流向数据暂不可用。"
             return f"行业板块资金流向排名：\n{df.head(20).to_string(index=False)}"
-        except Exception as e:
+        except Exception:
             return None
 
     def get_zt_pool(self, date: str) -> str:
@@ -288,7 +278,7 @@ class CnTushareProvider(BaseMarketDataProvider):
             if df is None or df.empty:
                 return f"{date} 涨停板数据暂不可用。"
             return f"涨停板情绪池（{date}）：\n{df.head(30).to_string(index=False)}"
-        except Exception as e:
+        except Exception:
             return None
 
     def get_cyq_perf(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame | None:
@@ -312,7 +302,9 @@ class CnTushareProvider(BaseMarketDataProvider):
         ts_code = self._to_tushare_code(symbol)
         try:
             date_clean = trade_date.replace("-", "")
-            logger.info(f"[Tushare] get_cyq_chips: symbol={symbol}, ts_code={ts_code}, trade_date={trade_date} → {date_clean}")
+            logger.info(
+                f"[Tushare] get_cyq_chips: symbol={symbol}, ts_code={ts_code}, trade_date={trade_date} → {date_clean}"
+            )
             df = self._call_with_retry(
                 self._ts.cyq_chips,
                 ts_code=ts_code,

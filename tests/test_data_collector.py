@@ -9,11 +9,20 @@ def test_make_cache_key():
 def test_collect_populates_required_keys():
     collector = DataCollector()
     stub_pool = {
-        "stock_data": "data", "indicators": {}, "news": "n", "global_news": "gn",
-        "fundamentals": "f", "balance_sheet": "bs", "cashflow": "cf",
-        "income_statement": "is", "fund_flow_board": "ffb",
-        "fund_flow_individual": "ffi", "lhb": "lhb",
-        "insider_transactions": "it", "zt_pool": "zt", "hot_stocks": "hs",
+        "stock_data": "data",
+        "indicators": {},
+        "news": "n",
+        "global_news": "gn",
+        "fundamentals": "f",
+        "balance_sheet": "bs",
+        "cashflow": "cf",
+        "income_statement": "is",
+        "fund_flow_board": "ffb",
+        "fund_flow_individual": "ffi",
+        "lhb": "lhb",
+        "insider_transactions": "it",
+        "zt_pool": "zt",
+        "hot_stocks": "hs",
     }
     with patch("tradingagents.graph.data_collector._fetch_all", return_value=stub_pool):
         result = collector.collect("600519", "2026-03-12")

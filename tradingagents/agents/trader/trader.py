@@ -1,7 +1,5 @@
 from langchain_core.messages import AIMessage
 import functools
-import time
-import json
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.agents.utils.agent_states import current_tracker_var
@@ -66,7 +64,7 @@ def create_trader(llm, memory):
             if tracker:
                 tracker._emit_token("Trader", "trader_investment_plan", content)
 
-        result = AIMessage(content=full_content)
+        result = AIMessage(content=full_content, name=name)
         updated_feedback_state = dict(risk_feedback_state)
         if updated_feedback_state.get("revision_required"):
             updated_feedback_state["revision_required"] = False

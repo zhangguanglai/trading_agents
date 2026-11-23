@@ -1,13 +1,10 @@
 # TradingAgents/graph/trading_graph.py
 
-import asyncio
 import os
 import re
 from pathlib import Path
 import json
-from datetime import date
-from typing import Dict, Any, Tuple, List, Optional
-import sqlite3
+from typing import Dict, Any, List, Optional
 import logging
 
 from langgraph.prebuilt import ToolNode
@@ -17,11 +14,6 @@ from tradingagents.llm_clients import create_llm_client
 
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.utils.memory import FinancialSituationMemory
-from tradingagents.agents.utils.agent_states import (
-    AgentState,
-    InvestDebateState,
-    RiskDebateState,
-)
 from tradingagents.dataflows.config import set_config
 
 # Import the new abstract tool methods from agent_utils
@@ -76,7 +68,7 @@ class TradingAgentsGraph:
         # Initialize persistence (Singleton Pattern for concurrency)
         if TradingAgentsGraph._shared_checkpointer is None:
             TradingAgentsGraph._shared_checkpointer = MemorySaver()
-        
+
         self.checkpointer = TradingAgentsGraph._shared_checkpointer
 
         # Create necessary directories
@@ -107,7 +99,7 @@ class TradingAgentsGraph:
 
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
-        
+
         # Initialize memories
         self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
         self.bear_memory = FinancialSituationMemory("bear_memory", self.config)
@@ -139,9 +131,7 @@ class TradingAgentsGraph:
             data_collector=self.data_collector,
         )
 
-        self.propagator = Propagator(
-            max_recur_limit=self.config.get("max_recur_limit", 100)
-        )
+        self.propagator = Propagator(max_recur_limit=self.config.get("max_recur_limit", 100))
         self.reflector = Reflector(self.quick_thinking_llm)
         self.signal_processor = SignalProcessor(self.quick_thinking_llm)
 
@@ -334,9 +324,7 @@ class TradingAgentsGraph:
 
         graph_args = self.propagator.get_graph_args()
 
-        state = self.propagator.create_initial_state(
-            ticker, trade_date, user_intent=user_intent, horizon="short"
-        )
+        state = self.propagator.create_initial_state(ticker, trade_date, user_intent=user_intent, horizon="short")
         final_state = await self.graph.ainvoke(state, **graph_args)
 
         # Evict cached data to free memory
@@ -384,9 +372,7 @@ class TradingAgentsGraph:
         user_intent: Dict[str, Any],
     ) -> None:
         """Log dual-horizon results to a JSON file."""
-        ticker = self._safe_ticker(
-            short_result.get("company_of_interest") or self.ticker or "unknown"
-        )
+        ticker = self._safe_ticker(short_result.get("company_of_interest") or self.ticker or "unknown")
         entry = {
             "user_intent": user_intent,
             "short_term": short_result,
@@ -399,6 +385,7 @@ class TradingAgentsGraph:
         with open(
             f"eval_results/{ticker}/TradingAgentsStrategy_logs/dual_horizon_{trade_date}.json",
             "w",
+            encoding="utf-8",  # 本地补丁(2026-09-06)：默认 GBK 写 emoji 会崩
         ) as f:
             json.dump(entry, f, indent=4, ensure_ascii=False)
 
@@ -423,12 +410,8 @@ class TradingAgentsGraph:
                 "bear_history": final_state["investment_debate_state"]["bear_history"],
                 "history": final_state["investment_debate_state"]["history"],
                 "current_speaker": final_state["investment_debate_state"].get("current_speaker", ""),
-                "current_response": final_state["investment_debate_state"][
-                    "current_response"
-                ],
-                "judge_decision": final_state["investment_debate_state"][
-                    "judge_decision"
-                ],
+                "current_response": final_state["investment_debate_state"]["current_response"],
+                "judge_decision": final_state["investment_debate_state"]["judge_decision"],
                 "claims": final_state["investment_debate_state"].get("claims", []),
                 "focus_claim_ids": final_state["investment_debate_state"].get("focus_claim_ids", []),
                 "open_claim_ids": final_state["investment_debate_state"].get("open_claim_ids", []),
@@ -465,26 +448,17 @@ class TradingAgentsGraph:
         with open(
             f"eval_results/{safe_ticker}/TradingAgentsStrategy_logs/full_states_log_{trade_date}.json",
             "w",
+            encoding="utf-8",  # 本地补丁(2026-09-06)：默认 GBK 写 emoji 会崩
         ) as f:
             json.dump(self.log_states_dict, f, indent=4)
 
     def reflect_and_remember(self, returns_losses):
         """Reflect on decisions and update memory based on returns."""
-        self.reflector.reflect_bull_researcher(
-            self.curr_state, returns_losses, self.bull_memory
-        )
-        self.reflector.reflect_bear_researcher(
-            self.curr_state, returns_losses, self.bear_memory
-        )
-        self.reflector.reflect_trader(
-            self.curr_state, returns_losses, self.trader_memory
-        )
-        self.reflector.reflect_invest_judge(
-            self.curr_state, returns_losses, self.invest_judge_memory
-        )
-        self.reflector.reflect_risk_manager(
-            self.curr_state, returns_losses, self.risk_manager_memory
-        )
+        self.reflector.reflect_bull_researcher(self.curr_state, returns_losses, self.bull_memory)
+        self.reflector.reflect_bear_researcher(self.curr_state, returns_losses, self.bear_memory)
+        self.reflector.reflect_trader(self.curr_state, returns_losses, self.trader_memory)
+        self.reflector.reflect_invest_judge(self.curr_state, returns_losses, self.invest_judge_memory)
+        self.reflector.reflect_risk_manager(self.curr_state, returns_losses, self.risk_manager_memory)
 
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""

@@ -24,7 +24,7 @@ dependencies = [
     "typing-extensions>=4.14.0",
     "yfinance>=0.2.63",
     "akshare>=1.16.80",
-    "baostock>=0.8.9",
+    "baostock>=0.9.1",
     "tushare>=1.4.15",
     "fastapi>=0.116.1",
     "python-multipart>=0.0.18",
@@ -35,6 +35,7 @@ dependencies = [
     "json-repair>=0.44.0",
     "markdown>=3.7",
     "redis[hiredis]>=5.0.0",
+    "alembic>=1.14.0",
 ]
 
 [project.scripts]
@@ -48,4 +49,61 @@ include = ["tradingagents*", "cli*", "api*", "scheduler*"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "pytest-cov>=5.0",
+    "pytest-timeout>=2.1",
+    "ruff>=0.15",
+]
+
+# ── Ruff (lint + format) ─────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    ".ruff_cache",
+    "data",
+    "frontend",
+]
+
+[tool.ruff.lint]
+# Start from the default rule set (E4/E7/E9/F). Tighten by adding rules over
+# time; do not broaden in a single change or the gate goes red on day one.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Re-export hub: names are imported for external consumers (from api.main import X),
+# not used locally. E402 = imports intentionally placed after logging/env setup.
+"api/main.py" = ["E402", "F405"]
+# Lazy `import api.main` placed after module setup to avoid circular imports.
+"api/services/report_service.py" = ["E402"]
+"scheduler/main.py" = ["E402"]
+# Models re-imported from api.main after router creation to avoid circular import.
+"api/routers/feedback.py" = ["E402"]
+
+# ── Coverage ─────────────────────────────────────────────────────────────────
+[tool.coverage.run]
+branch = true
+source = ["api", "tradingagents", "scheduler"]
+omit = [
+    "*/__init__.py",
+    "*/tests/*",
+    "*/migrations/*",
+    "*/cli/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+
+[tool.pytest.ini_options]
+# --timeout fails fast instead of hanging the runner (CI must never hang).
+# Network tests are excluded by default; opt in with `-m network`.
+addopts = "-p no:cacheprovider --strict-markers --timeout=60"
+markers = [
+    "network: tests that reach external data sources (excluded from default CI run)",
 ]

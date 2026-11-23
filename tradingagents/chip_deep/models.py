@@ -1,11 +1,12 @@
 """chip-deep Pydantic 数据模型"""
 
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List
 
 
 class ChipDistributionItem(BaseModel):
     """筹码分布单项"""
+
     price_low: float = Field(..., description="价格区间下限")
     price_high: float = Field(..., description="价格区间上限")
     percent: float = Field(..., description="该区间筹码占比(%)")
@@ -13,6 +14,7 @@ class ChipDistributionItem(BaseModel):
 
 class MarginChangeItem(BaseModel):
     """边际变化单项"""
+
     price_low: float
     price_high: float
     prev_pct: float = Field(..., description="前期占比(%)")
@@ -22,6 +24,7 @@ class MarginChangeItem(BaseModel):
 
 class Dim6ScoreItem(BaseModel):
     """六维评分单项（加权版，支持0, 0.25, 0.5, 1.0, 2.0）"""
+
     score: float = Field(..., ge=0, le=2.0, description="加权得分")
     label: str = Field(..., description="✅/⚠️/❌")
     detail: str = Field(..., description="详细说明")
@@ -29,6 +32,7 @@ class Dim6ScoreItem(BaseModel):
 
 class Dim6Score(BaseModel):
     """六维评分总览"""
+
     chip_density: Dim6ScoreItem = Field(..., description="① 筹码密度")
     margin_change: Dim6ScoreItem = Field(..., description="② 边际变化")
     winner_position: Dim6ScoreItem = Field(..., description="③ 获利盘")
@@ -39,6 +43,7 @@ class Dim6Score(BaseModel):
 
 class PriceStage(BaseModel):
     """价格走势阶段"""
+
     name: str = Field(..., description="阶段名称")
     start_date: str = Field(..., description="开始日期")
     end_date: str = Field(..., description="结束日期")
@@ -51,6 +56,7 @@ class PriceStage(BaseModel):
 
 class CoreInsight(BaseModel):
     """核心洞察"""
+
     title: str = Field(..., description="洞察标题")
     content: str = Field(..., description="洞察内容")
     level: str = Field(..., description="级别: info/warning/success/danger")
@@ -58,6 +64,7 @@ class CoreInsight(BaseModel):
 
 class ChipDeepResult(BaseModel):
     """筹码深度分析完整结果"""
+
     meta: dict = Field(..., description="元数据")
     current: dict = Field(..., description="当前价格/成本指标")
     price_stages: List[PriceStage] = Field(default=[], description="价格走势阶段")

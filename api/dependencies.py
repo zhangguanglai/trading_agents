@@ -68,8 +68,8 @@ class RequireUser:
 
 
 # 快捷依赖定义
-_require_api_user = RequireUser(allow_api_token=True)    # 允许 API Token
-_require_web_user = RequireUser(allow_api_token=False)   # 仅限网页登录
+_require_api_user = RequireUser(allow_api_token=True)  # 允许 API Token
+_require_web_user = RequireUser(allow_api_token=False)  # 仅限网页登录
 
 
 def _optional_user(

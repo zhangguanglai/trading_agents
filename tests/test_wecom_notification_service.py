@@ -1,4 +1,5 @@
 """Tests for api.services.wecom_notification_service."""
+
 from __future__ import annotations
 
 import asyncio
@@ -116,8 +117,10 @@ class TestSendReportMessageWithRetry:
     def test_success_first_try(self):
         from api.services.wecom_notification_service import send_report_message_with_retry
 
-        with patch("api.services.wecom_notification_service.send_message", return_value=True) as mock_send, \
-             patch("api.services.wecom_notification_service.asyncio.sleep", side_effect=_noop_sleep):
+        with (
+            patch("api.services.wecom_notification_service.send_message", return_value=True) as mock_send,
+            patch("api.services.wecom_notification_service.asyncio.sleep", side_effect=_noop_sleep),
+        ):
             result = asyncio.run(send_report_message_with_retry(_make_report(), "https://example.com"))
             assert result is True
             assert mock_send.call_count == 1
@@ -125,8 +128,10 @@ class TestSendReportMessageWithRetry:
     def test_success_on_retry(self):
         from api.services.wecom_notification_service import send_report_message_with_retry
 
-        with patch("api.services.wecom_notification_service.send_message", side_effect=[False, True]) as mock_send, \
-             patch("api.services.wecom_notification_service.asyncio.sleep", side_effect=_noop_sleep):
+        with (
+            patch("api.services.wecom_notification_service.send_message", side_effect=[False, True]) as mock_send,
+            patch("api.services.wecom_notification_service.asyncio.sleep", side_effect=_noop_sleep),
+        ):
             result = asyncio.run(send_report_message_with_retry(_make_report(), "https://example.com"))
             assert result is True
             assert mock_send.call_count == 2

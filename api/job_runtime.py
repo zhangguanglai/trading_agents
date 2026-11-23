@@ -36,7 +36,13 @@ def get_job_store():
 # Hold references to fire-and-forget tasks so they are not garbage collected
 _background_tasks: set = set()
 
-_JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "900"))  # seconds
+# Soft deadline for long-running analyses.  Keeps the historical
+# TA_JOB_TIMEOUT setting API-compatible, but crossing it now emits an overtime
+# notification instead of terminating the job.  TA_JOB_HARD_TIMEOUT is the
+# resource-safety backstop that releases scheduler capacity if a workflow is
+# genuinely wedged.  Set either value to 0 to disable that deadline.
+_JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "1800"))
+_JOB_HARD_TIMEOUT = int(os.getenv("TA_JOB_HARD_TIMEOUT", "7200"))
 
 
 def _create_tracked_task(coro, *, label: str = "Background task") -> asyncio.Task:
@@ -56,6 +62,7 @@ def _create_tracked_task(coro, *, label: str = "Background task") -> asyncio.Tas
 
 def _utcnow_iso() -> str:
     from datetime import datetime, timezone
+
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -144,6 +151,7 @@ ANALYST_REPORT_MAP = {
 
 
 # ── Agent progress tracker ───────────────────────────────────────────────────
+
 
 class AgentProgressTracker:
     # 阶段标题映射
@@ -248,7 +256,7 @@ class AgentProgressTracker:
             return
 
         # 按段落分割，保持Markdown结构
-        paragraphs = content.split('\n\n')
+        paragraphs = content.split("\n\n")
 
         for i, para in enumerate(paragraphs):
             if not para.strip():
@@ -259,7 +267,7 @@ class AgentProgressTracker:
                 "agent.report.chunk",
                 {
                     "section": section,
-                    "chunk": para + '\n\n',
+                    "chunk": para + "\n\n",
                     "index": i,
                     "is_complete": False,
                     "horizon": self.horizon,
@@ -298,7 +306,7 @@ class AgentProgressTracker:
                 self.start_times[agent] = time.time()
             elif status == "completed" and agent in self.start_times:
                 duration = time.time() - self.start_times[agent]
-                logger.info("[Timer] Agent %s (%s) finished in %.2fs", agent, self.horizon or 'main', duration)
+                logger.info("[Timer] Agent %s (%s) finished in %.2fs", agent, self.horizon or "main", duration)
 
         _emit_job_event(
             self.job_id,
@@ -381,7 +389,11 @@ class AgentProgressTracker:
         )
 
     def emit_debate_token(
-        self, debate: str, agent: str, round_num: int, token: str,
+        self,
+        debate: str,
+        agent: str,
+        round_num: int,
+        token: str,
     ) -> None:
         """推送辩论 token（流式输出，每个 chunk 调用一次）"""
         if not token:
@@ -402,8 +414,12 @@ class AgentProgressTracker:
             logger.debug("tracker emit failed: %s", e)
 
     def emit_debate_message(
-        self, debate: str, agent: str, round_num: int,
-        content: str, is_verdict: bool = False,
+        self,
+        debate: str,
+        agent: str,
+        round_num: int,
+        content: str,
+        is_verdict: bool = False,
     ) -> None:
         """推送辩论消息（每个 agent 每轮完成后调用一次）"""
         if not content:
@@ -423,7 +439,10 @@ class AgentProgressTracker:
             )
         except Exception:
             logging.getLogger(__name__).warning(
-                "Failed to emit debate message for %s in %s", agent, debate, exc_info=True,
+                "Failed to emit debate message for %s in %s",
+                agent,
+                debate,
+                exc_info=True,
             )
 
     def apply_chunk(self, chunk: Dict[str, Any]) -> None:
@@ -493,12 +512,14 @@ class AgentProgressTracker:
 
 # ── SSE streaming & ownership ────────────────────────────────────────────────
 
+
 def _sse_pack(event: str, data: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 async def _stream_job_events(job_id: str):
     import asyncio
+
     store = get_job_store()
     yield _sse_pack("job.ready", {"job_id": job_id})
     try:

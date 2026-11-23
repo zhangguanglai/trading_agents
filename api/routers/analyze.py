@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,7 +25,7 @@ from api.main import (
     _extract_request_user_context,
     _extract_symbol_and_date,
     _get_job,
-    _normalize_symbol,
+    _log,
     _run_job,
     _search_cn_stock_by_name,
     _set_job,
@@ -65,6 +64,8 @@ async def analyze(
         symbol=request.symbol,
         trade_date=request.trade_date,
         error=None,
+        overtime=False,
+        overtime_at=None,
         result=None,
         decision=None,
     )
@@ -103,7 +104,10 @@ async def chat_completions(
                 if not fast_symbol:
                     # 正则未命中，尝试从文本中提取中文公司名做本地查找
                     import re as _re
-                    cn_name_match = _re.search(r'分析\s*([\u4e00-\u9fa5]+)|查看\s*([\u4e00-\u9fa5]+)|搜[\s]*([\u4e00-\u9fa5]+)', text)
+
+                    cn_name_match = _re.search(
+                        r"分析\s*([\u4e00-\u9fa5]+)|查看\s*([\u4e00-\u9fa5]+)|搜[\s]*([\u4e00-\u9fa5]+)", text
+                    )
                     if cn_name_match:
                         cn_candidate = next((g for g in cn_name_match.groups() if g), None)
                         if cn_candidate:
@@ -115,13 +119,23 @@ async def chat_completions(
                     _emit_job_event(job_id, "job.created", {"symbol": symbol})
                 else:
                     # ── 慢速路径：正则未命中，调用 LLM 提取 ────────────────
-                    symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = \
-                        await _main._ai_extract_symbol_and_date_streaming(text, config, job_id)
+                    (
+                        symbol,
+                        trade_date,
+                        horizons,
+                        focus_areas,
+                        specific_questions,
+                        inferred_user_context,
+                    ) = await _main._ai_extract_symbol_and_date_streaming(text, config, job_id)
 
                 if not symbol:
-                    _emit_job_event(job_id, "job.failed", {
-                        "error": "抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。"
-                    })
+                    _emit_job_event(
+                        job_id,
+                        "job.failed",
+                        {
+                            "error": "抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。"
+                        },
+                    )
                     return
 
                 pre_intent = {
@@ -172,6 +186,8 @@ async def chat_completions(
                     symbol=analyze_req.symbol,
                     trade_date=analyze_req.trade_date,
                     error=None,
+                    overtime=False,
+                    overtime_at=None,
                     result=None,
                     decision=None,
                 )
@@ -183,6 +199,7 @@ async def chat_completions(
                 await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
             except Exception as exc:
                 import traceback
+
                 _log(f"[chat] _extract_and_run failed: {exc}\n{traceback.format_exc()}")
                 _emit_job_event(job_id, "job.failed", {"error": str(exc)})
 
@@ -197,7 +214,10 @@ async def chat_completions(
     fast_symbol, fast_date = _extract_symbol_and_date(text)
     if not fast_symbol:
         import re as _re
-        cn_name_match = _re.search(r'分析\s*([\u4e00-\u9fa5]+)|查看\s*([\u4e00-\u9fa5]+)|搜[\s]*([\u4e00-\u9fa5]+)', text)
+
+        cn_name_match = _re.search(
+            r"分析\s*([\u4e00-\u9fa5]+)|查看\s*([\u4e00-\u9fa5]+)|搜[\s]*([\u4e00-\u9fa5]+)", text
+        )
         if cn_name_match:
             cn_candidate = next((g for g in cn_name_match.groups() if g), None)
             if cn_candidate:
@@ -207,11 +227,15 @@ async def chat_completions(
         symbol, trade_date = fast_symbol, fast_date or cn_today_str()
         horizons, focus_areas, specific_questions, inferred_user_context = ["short"], [], [], {}
     else:
-        symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = \
-            await asyncio.to_thread(_main._ai_extract_symbol_and_date, text, config)
+        symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = await asyncio.to_thread(
+            _main._ai_extract_symbol_and_date, text, config
+        )
 
     if not symbol:
-        raise HTTPException(status_code=400, detail="抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。")
+        raise HTTPException(
+            status_code=400,
+            detail="抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。",
+        )
 
     pre_intent = {
         "raw_query": text,
@@ -262,6 +286,8 @@ async def chat_completions(
         symbol=analyze_req.symbol,
         trade_date=analyze_req.trade_date,
         error=None,
+        overtime=False,
+        overtime_at=None,
         result=None,
         decision=None,
     )

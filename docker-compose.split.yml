@@ -1,0 +1,111 @@
+# 生产分角色部署：一次性迁移、Redis、API、调度器。
+# 在 /opt/tradingagents 下使用：
+#   docker compose --env-file .env --env-file release.env -f docker-compose.split.yml up -d
+# IMAGE_REF 必须是不可变镜像摘要；同一数据库绝不能额外运行第二个调度器。
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-application: &application
+  image: ${IMAGE_REF:?Set IMAGE_REF to an immutable ghcr.io image digest in release.env}
+  env_file:
+    - .env
+  volumes:
+    - /var/lib/tradingagents/data:/app/data
+    - /var/lib/tradingagents/uploads:/app/uploads
+  logging: *default-logging
+  # 2C/1.6GiB 低内存主机：限制单容器上限，超限部分走宿主 swap，避免整机 OOM。
+  # memswap_limit 为内存+swap 总上限，必须显式设置，否则默认仅有内存上限。
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: tradingagents-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - /var/lib/tradingagents/redis:/data
+    mem_limit: 128m
+    memswap_limit: 256m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    logging: *default-logging
+
+  migrate:
+    <<: *application
+    container_name: tradingagents-migrate
+    restart: "no"
+    command: ["/app/.venv/bin/alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: sqlite:///./data/tradingagents.db
+
+  api:
+    <<: *application
+    container_name: tradingagents-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 900m
+    memswap_limit: 1800m
+    environment:
+      APP_ENV: production
+      ENV: prod
+      DATABASE_URL: sqlite:///./data/tradingagents.db
+      REDIS_URL: redis://redis:6379/0
+      TA_DISABLE_SCHEDULER: "1"
+      TA_REQUIRE_SCHEDULER: "1"
+      MALLOC_ARENA_MAX: "2"
+      ASYNCIO_DEFAULT_EXECUTOR_WORKERS: "16"
+      TA_APP_SECRET_KEY: ${TA_APP_SECRET_KEY:?Set TA_APP_SECRET_KEY in .env}
+      TA_ALLOWED_EMAILS: ${TA_ALLOWED_EMAILS:?Set TA_ALLOWED_EMAILS in .env}
+      SCHEDULER_HEARTBEAT_FILE: /app/data/scheduler_heartbeat.json
+      UPLOAD_DIR: /app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  scheduler:
+    <<: *application
+    container_name: tradingagents-scheduler
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 500m
+    memswap_limit: 1000m
+    environment:
+      APP_ENV: production
+      ENV: prod
+      DATABASE_URL: sqlite:///./data/tradingagents.db
+      REDIS_URL: redis://redis:6379/0
+      TA_DISABLE_API: "1"
+      SCHEDULER_CONCURRENCY: "1"
+      MALLOC_ARENA_MAX: "2"
+      ASYNCIO_DEFAULT_EXECUTOR_WORKERS: "16"
+      TA_APP_SECRET_KEY: ${TA_APP_SECRET_KEY:?Set TA_APP_SECRET_KEY in .env}
+      TA_ALLOWED_EMAILS: ${TA_ALLOWED_EMAILS:?Set TA_ALLOWED_EMAILS in .env}
+      SCHEDULER_HEARTBEAT_FILE: /app/data/scheduler_heartbeat.json
+      UPLOAD_DIR: /app/uploads
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-m", "api.scheduler_heartbeat"]
+      interval: 30s
+      timeout: 5s
+      retries: 4
+      start_period: 240s

@@ -7,7 +7,7 @@ import re
 
 logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any, Iterable, Literal
+from typing import List, Optional, Dict, Any, Iterable
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -104,6 +104,7 @@ def extract_structured_data(
         return None
     if config is None:
         from tradingagents.default_config import DEFAULT_CONFIG
+
         config = DEFAULT_CONFIG
 
     try:
@@ -139,17 +140,18 @@ def extract_structured_data(
         return result
     except Exception as e:
         logger.warning(f"LLM structured extraction failed: {e}")
-        if 'raw' in locals():
+        if "raw" in locals():
             logger.warning(f"Raw LLM output:\n{raw}")
         return None
 
 
 # ─── Fallback regex extraction (used when LLM extraction unavailable) ─────────
 
+
 def _extract_confidence_regex(text: Optional[str]) -> Optional[int]:
     if not text:
         return None
-    for pattern in (r'置信度[:：]\s*(\d+)%', r'confidence[:：]\s*(\d+)%'):
+    for pattern in (r"置信度[:：]\s*(\d+)%", r"confidence[:：]\s*(\d+)%"):
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
             v = int(m.group(1))
@@ -162,15 +164,15 @@ def _extract_price_regex(text: Optional[str], price_type: str = "target") -> Opt
         return None
     if price_type == "target":
         patterns = [
-            r'目标价[:：]\s*[¥$]?\s*(\d+\.?\d*)',
-            r'目标价格[:：]\s*[¥$]?\s*(\d+\.?\d*)',
-            r'target[:：]\s*[¥$]?\s*(\d+\.?\d*)',
+            r"目标价[:：]\s*[¥$]?\s*(\d+\.?\d*)",
+            r"目标价格[:：]\s*[¥$]?\s*(\d+\.?\d*)",
+            r"target[:：]\s*[¥$]?\s*(\d+\.?\d*)",
         ]
     else:
         patterns = [
-            r'止损价[:：]\s*[¥$]?\s*(\d+\.?\d*)',
-            r'止损价格[:：]\s*[¥$]?\s*(\d+\.?\d*)',
-            r'stop[-\s_]?loss[:：]\s*[¥$]?\s*(\d+\.?\d*)',
+            r"止损价[:：]\s*[¥$]?\s*(\d+\.?\d*)",
+            r"止损价格[:：]\s*[¥$]?\s*(\d+\.?\d*)",
+            r"stop[-\s_]?loss[:：]\s*[¥$]?\s*(\d+\.?\d*)",
         ]
     for p in patterns:
         m = re.search(p, text, re.IGNORECASE)
@@ -187,7 +189,7 @@ def _extract_verdict(text: Optional[str]) -> Optional[Dict[str, str]]:
         return None
     try:
         # Clean potential newlines or invisible characters common in LLM outputs
-        raw_json = match.group(1).strip().replace('\n', ' ').replace('\r', ' ')
+        raw_json = match.group(1).strip().replace("\n", " ").replace("\r", " ")
         payload = json.loads(raw_json)
     except Exception:
         return None
@@ -226,13 +228,23 @@ def resolve_report_fields(
     verdict = _extract_verdict(final_trade_decision)
     direction = verdict["direction"] if verdict else None
 
-    confidence = confidence_override if confidence_override is not None else _extract_confidence_regex(final_trade_decision)
+    confidence = (
+        confidence_override if confidence_override is not None else _extract_confidence_regex(final_trade_decision)
+    )
 
-    target_price = target_price_override if target_price_override is not None else _extract_price_regex(final_trade_decision, "target")
+    target_price = (
+        target_price_override
+        if target_price_override is not None
+        else _extract_price_regex(final_trade_decision, "target")
+    )
     if target_price is None:
         target_price = _extract_price_regex(trader_investment_plan, "target")
 
-    stop_loss_price = stop_loss_override if stop_loss_override is not None else _extract_price_regex(final_trade_decision, "stop_loss")
+    stop_loss_price = (
+        stop_loss_override
+        if stop_loss_override is not None
+        else _extract_price_regex(final_trade_decision, "stop_loss")
+    )
     if stop_loss_price is None:
         stop_loss_price = _extract_price_regex(trader_investment_plan, "stop_loss")
 
@@ -256,6 +268,7 @@ def resolve_report_fields(
 
 
 # ─── CRUD ────────────────────────────────────────────────────────────────────
+
 
 def init_report(
     db: Session,
@@ -282,23 +295,20 @@ def init_report(
 
 
 def update_report_partial(
-    db: Session,
-    report_id: str,
-    status: Optional[str] = None,
-    **fields: Any
+    db: Session, report_id: str, status: Optional[str] = None, **fields: Any
 ) -> Optional[ReportDB]:
     """Update specific fields of an existing report (e.g., partial analyst reports)."""
     db_report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
     if not db_report:
         return None
-    
+
     if status:
         db_report.status = status
-    
+
     for key, value in fields.items():
         if hasattr(db_report, key):
             setattr(db_report, key, value)
-    
+
     db_report.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(db_report)
@@ -331,11 +341,7 @@ def recover_stale_active_reports(
 ) -> Dict[str, int]:
     """Recover stale pending/running reports left behind by interrupted jobs."""
     active_job_id_set = {str(job_id) for job_id in (active_job_ids or []) if str(job_id).strip()}
-    rows = (
-        db.query(ReportDB)
-        .filter(ReportDB.status.in_(ACTIVE_REPORT_STATUSES))
-        .all()
-    )
+    rows = db.query(ReportDB).filter(ReportDB.status.in_(ACTIVE_REPORT_STATUSES)).all()
     if not rows:
         return {"total": 0, "failed": 0}
 
@@ -360,11 +366,7 @@ def recover_stale_active_reports(
     }
 
 
-def mark_report_failed(
-    db: Session,
-    report_id: str,
-    error_message: str
-) -> Optional[ReportDB]:
+def mark_report_failed(db: Session, report_id: str, error_message: str) -> Optional[ReportDB]:
     """Mark a report as failed with an error message."""
     return update_report_partial(db, report_id, status="failed", error=error_message)
 
@@ -393,7 +395,7 @@ def create_report(
     )
 
     now = datetime.now(timezone.utc)
-    
+
     # Check if we should update an existing record (initialized via init_report)
     db_report = None
     if report_id:
@@ -402,6 +404,9 @@ def create_report(
     if db_report:
         # Update existing
         db_report.status = "completed"
+        # A report may previously have been marked failed by an older worker
+        # or timeout policy.  Successful finalisation is authoritative.
+        db_report.error = None
         db_report.decision = decision
         db_report.direction = resolved["direction"]
         db_report.confidence = resolved["confidence"]

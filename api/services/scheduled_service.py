@@ -114,9 +114,7 @@ def create_scheduled(
     trigger_time: str = "20:00",
 ) -> dict:
     """Create a scheduled analysis task."""
-    count = db.query(ScheduledAnalysisDB).filter(
-        ScheduledAnalysisDB.user_id == user_id
-    ).count()
+    count = db.query(ScheduledAnalysisDB).filter(ScheduledAnalysisDB.user_id == user_id).count()
     if count >= MAX_SCHEDULED_ITEMS:
         raise ValueError(f"定时分析数量已达上限 ({MAX_SCHEDULED_ITEMS})")
 
@@ -317,8 +315,8 @@ def get_pending_tasks(db: Session, today: str, current_hhmm: str) -> List[Schedu
     all_active = (
         db.query(ScheduledAnalysisDB)
         .filter(
-            ScheduledAnalysisDB.is_active == True,
-            (ScheduledAnalysisDB.last_run_date != today) | (ScheduledAnalysisDB.last_run_date == None),
+            ScheduledAnalysisDB.is_active.is_(True),
+            (ScheduledAnalysisDB.last_run_date != today) | (ScheduledAnalysisDB.last_run_date.is_(None)),
         )
         .all()
     )

@@ -7,12 +7,12 @@ Server-side configuration via environment variables:
   TA_VLM_PROVIDER     — "openai" (default) or "anthropic"
   TA_VLM_RAW_BASE64   — "1" (default) to send raw base64, "0" for data URI prefix
 """
+
 from __future__ import annotations
 
 import base64
 import logging
 import os
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ def call_vlm(
 
 def _call_openai_compatible(base64_image: str, media_type: str, prompt: str, config: dict) -> str:
     from openai import OpenAI
+
     client = OpenAI(
         api_key=config["api_key"],
         base_url=config.get("base_url") or None,
@@ -58,10 +59,13 @@ def _call_openai_compatible(base64_image: str, media_type: str, prompt: str, con
     response = client.chat.completions.create(
         model=config.get("model", "glm-4.6v-flash"),
         messages=[
-            {"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": image_url}},
-            ]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
         ],
         max_tokens=2000,
     )
@@ -72,15 +76,19 @@ def _call_openai_compatible(base64_image: str, media_type: str, prompt: str, con
 
 def _call_anthropic(base64_image: str, media_type: str, prompt: str, config: dict) -> str:
     import anthropic
+
     client = anthropic.Anthropic(api_key=config["api_key"])
     response = client.messages.create(
         model=config.get("model", "claude-sonnet-4-20250514"),
         max_tokens=2000,
         messages=[
-            {"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64_image}},
-                {"type": "text", "text": prompt},
-            ]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64_image}},
+                    {"type": "text", "text": prompt},
+                ],
+            },
         ],
     )
     raw = response.content[0].text if response.content else ""

@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from api.database import get_db_ctx
 from api.runtime_config import _build_runtime_config
@@ -22,7 +23,6 @@ from api.job_runtime import (
     ANALYST_ORDER,
     ANALYST_REPORT_MAP,
     AgentProgressTracker,
-    _JOB_TIMEOUT,
     _emit_job_event,
     _set_job,
     _utcnow_iso,
@@ -38,6 +38,7 @@ _log = logger.info
 # Lazy-imported symbols that live in api.main (avoid circular import at load time).
 def _main_deps():
     import api.main as _main
+
     return (
         _main._extract_request_user_context,
         _main._merge_user_context_payload,
@@ -47,6 +48,7 @@ def _main_deps():
 
 
 # ── Result / message helpers ─────────────────────────────────────────────────
+
 
 def _build_result_payload(final_state: Dict[str, Any]) -> Dict[str, Any]:
     return {
@@ -131,7 +133,53 @@ def _generate_tool_description(tool_name: str, tool_args: Dict[str, Any]) -> str
     return f"调用 {tool_name}"
 
 
+# ── Error humanization ───────────────────────────────────────────────────────
+
+_ANALYSIS_ERROR_HINTS: List[tuple] = [
+    (
+        r"Insufficient Balance|Error code: 402",
+        "您配置的大模型 API Key 余额不足。请前往模型服务商充值，或在「设置」中更换其他模型。",
+    ),
+    (
+        r"DataInspectionFailed|sensitive words detect|data_inspection",
+        "模型服务商的内容安全审查拦截了本次分析输出（A股分析内容偶发误伤）。请重试一次；若频繁出现，建议在「设置」中更换其他模型服务商。",
+    ),
+    (
+        r"Error code: 429|too.?many.?requests|throttling|rate.?limit",
+        "模型服务限流（请求过于频繁或额度受限）。请稍后重试，或在「设置」中更换模型。",
+    ),
+    (
+        r"Error code: 401|Authorization Failed|invalid.*api.?key|authentication",
+        "模型 API Key 无效或已过期。请在「设置」中检查 API Key 配置并点击「测试」验证。",
+    ),
+    (
+        r"Unsupported model|invalid_parameter.*model|model.*not.*(exist|found)",
+        "配置的模型名称不被服务商支持（可能已下线或改名）。请在「设置」中更换模型名称。",
+    ),
+    (
+        r"Error code: 5\d\d|overloaded|InternalError|upload file failed",
+        "模型服务端暂时故障。请稍后重试；若持续失败，建议在「设置」中更换模型。",
+    ),
+    (
+        r"Connection error|peer closed connection|Request timed out|timed?.?out|ConnectTimeout|Connection refused",
+        "连接模型服务失败（网络波动或服务不可达）。请稍后重试，并确认「设置」中的 Base URL 可以访问。",
+    ),
+]
+
+
+def _humanize_analysis_error(err: str) -> str:
+    """把 LLM/网络的原始报错翻译成用户能看懂的提示与建议动作。
+
+    识别不了的错误原样返回；识别出的保留截断后的原始错误便于反馈排查。
+    """
+    for pat, hint in _ANALYSIS_ERROR_HINTS:
+        if re.search(pat, err, re.IGNORECASE):
+            return f"{hint}\n\n（原始错误：{err[:200]}）"
+    return err
+
+
 # ── Job entry point ──────────────────────────────────────────────────────────
+
 
 async def _run_job(
     job_id: str,
@@ -141,29 +189,147 @@ async def _run_job(
     user_id: Optional[str] = None,
     request_source: str = "api",
 ) -> None:
-    # 用 asyncio.Task + sleep 竞速代替 wait_for，避免 cancel 卡在 to_thread 导致
-    # semaphore 永远不释放的问题。超时后标记失败但不 cancel 内部协程（让线程自然结束）。
-    inner_task = asyncio.create_task(
-        _run_job_inner(job_id, request, stream_events, save_report, user_id, request_source)
-    )
-    done, _ = await asyncio.wait({inner_task}, timeout=_JOB_TIMEOUT)
-    if inner_task in done:
-        # 正常完成（可能成功也可能异常）
-        if not inner_task.cancelled() and inner_task.exception():
-            _log(f"[Job {job_id}] failed: {inner_task.exception()}")
-        return
-    # 超时：标记失败，但不 cancel 内部 task（避免 cancel 卡住）
-    err_msg = f"任务超时（超过 {_JOB_TIMEOUT} 秒），已自动终止"
-    _log(f"[Job {job_id}] {err_msg}")
-    _set_job(job_id, status="failed", error=err_msg, finished_at=_utcnow_iso())
-    # 注意：不能用 asyncio.to_thread 写 DB，因为线程池可能被僵尸任务占满导致死锁。
-    # 用同步方式直接写，SQLite 的写入足够快不会阻塞事件循环。
+    # Runtime knobs are resolved through ``api.main`` so env overrides and
+    # monkeypatched values (tests / admin tooling) are honoured even though
+    # this function now lives in its own module.
+    import api.main as _main
+
+    job_timeout = _main._JOB_TIMEOUT
+    job_hard_timeout = _main._JOB_HARD_TIMEOUT
+    run_inner = _main._run_job_inner
+    set_job = _main._set_job
+    emit_job_event = _main._emit_job_event
+    utcnow_iso = _main._utcnow_iso
+    db_ctx = _main.get_db_ctx
+
+    # Keep the workflow in its own task so crossing the soft deadline does not
+    # cancel to_thread work.  The hard deadline cancels the coroutine and
+    # releases its caller/scheduler slot.  A sync function already submitted by
+    # asyncio.to_thread may finish later, but cancellation prevents the
+    # coroutine from resuming into report or terminal-state writes.
+    # perf_counter (QPC on Windows) has sub-millisecond resolution, unlike
+    # time.monotonic whose 15.6ms tick can report a 10ms deadline as 0 elapsed.
+    started_monotonic = time.perf_counter()
+    inner_task = asyncio.create_task(run_inner(job_id, request, stream_events, save_report, user_id, request_source))
     try:
-        with get_db_ctx() as db:
-            report_service.mark_report_failed(db, job_id, err_msg)
-    except Exception as e:
-        logger.warning(f"[Job {job_id}] failed to mark report as failed in DB: {e}")
-    _emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
+        if job_timeout > 0:
+            soft_wait_seconds = job_timeout
+            if job_hard_timeout > 0:
+                soft_wait_seconds = min(soft_wait_seconds, job_hard_timeout)
+            done, _ = await asyncio.wait({inner_task}, timeout=soft_wait_seconds)
+            if inner_task not in done and not inner_task.done():
+                # When the configured hard limit is no greater than the soft
+                # limit, skip the misleading overtime notice and fall through
+                # to the terminal hard-limit handling below.
+                if job_hard_timeout <= 0 or job_timeout < job_hard_timeout:
+                    overtime_at = utcnow_iso()
+                    # asyncio's coarse loop clock (15.6ms tick on Windows) can
+                    # fire a sub-tick deadline early; report at least the
+                    # configured deadline so logs/UI match the overtime message.
+                    elapsed_seconds = max(float(job_timeout), time.perf_counter() - started_monotonic)
+                    message = f"分析耗时较长（已超过 {job_timeout} 秒），后台仍在继续，正在等待最终结果，请勿重复提交。"
+                    _log(f"[Job {job_id}] {message}")
+                    set_job(
+                        job_id,
+                        status="running",
+                        overtime=True,
+                        overtime_at=overtime_at,
+                        error=None,
+                    )
+                    emit_job_event(
+                        job_id,
+                        "job.overtime",
+                        {
+                            "job_id": job_id,
+                            "elapsed_seconds": elapsed_seconds,
+                            "soft_timeout_seconds": job_timeout,
+                            "overtime_at": overtime_at,
+                            "message": message,
+                        },
+                    )
+
+        if job_hard_timeout > 0 and not inner_task.done():
+            remaining_seconds = max(
+                0.0,
+                job_hard_timeout - (time.perf_counter() - started_monotonic),
+            )
+            done, _ = await asyncio.wait({inner_task}, timeout=remaining_seconds)
+            if inner_task not in done and not inner_task.done() and inner_task.cancel():
+                try:
+                    await inner_task
+                except asyncio.CancelledError:
+                    pass
+
+                elapsed_seconds = time.perf_counter() - started_monotonic
+                err_msg = (
+                    f"任务达到硬性运行上限（{job_hard_timeout} 秒），已终止。请检查模型或数据源的请求超时配置后重试。"
+                )
+                _log(f"[Job {job_id}] {err_msg}")
+                set_job(
+                    job_id,
+                    status="failed",
+                    error=err_msg,
+                    overtime=False,
+                    overtime_at=None,
+                    finished_at=utcnow_iso(),
+                )
+                try:
+                    with db_ctx() as db:
+                        report_service.mark_report_failed(db, job_id, err_msg)
+                except Exception:
+                    pass
+                emit_job_event(
+                    job_id,
+                    "job.failed",
+                    {
+                        "job_id": job_id,
+                        "error": err_msg,
+                        "elapsed_seconds": elapsed_seconds,
+                        "hard_timeout_seconds": job_hard_timeout,
+                    },
+                )
+                return
+
+        await inner_task
+    except asyncio.CancelledError:
+        # Preserve normal application shutdown/caller cancellation semantics.
+        if not inner_task.done():
+            inner_task.cancel()
+        raise
+    except Exception as exc:
+        # _run_job_inner handles expected workflow errors itself.  This guards
+        # failures before its try block (initialisation/configuration) as well.
+        err_msg = f"{type(exc).__name__}: {exc}"
+        _log(f"[Job {job_id}] failed: {err_msg}")
+        set_job(
+            job_id,
+            status="failed",
+            error=err_msg,
+            overtime=False,
+            overtime_at=None,
+            finished_at=utcnow_iso(),
+        )
+        try:
+            with db_ctx() as db:
+                report_service.mark_report_failed(db, job_id, err_msg)
+        except Exception:
+            pass
+        emit_job_event(job_id, "job.failed", {"job_id": job_id, "error": err_msg})
+
+
+async def _save_report_or_raise(
+    job_id: str,
+    save_callable: Callable[[], Any],
+    *,
+    stage: str,
+) -> None:
+    """Run a report DB finalizer without turning persistence errors into success."""
+    try:
+        await asyncio.to_thread(save_callable)
+    except Exception as exc:
+        message = f"Failed to {stage} report for job {job_id}: {exc}"
+        _log(message)
+        raise RuntimeError(message) from exc
 
 
 async def _run_job_inner(
@@ -210,12 +376,7 @@ async def _run_job_inner(
     _emit_job_event(
         job_id,
         "job.running",
-        {
-            "job_id": job_id,
-            "symbol": normalized_symbol,
-            "display_name": display_name,
-            "trade_date": request.trade_date
-        },
+        {"job_id": job_id, "symbol": normalized_symbol, "display_name": display_name, "trade_date": request.trade_date},
     )
     # Ensure request object uses the normalized symbol for internal logic
     request.symbol = normalized_symbol
@@ -239,6 +400,9 @@ async def _run_job_inner(
                 status="completed",
                 result=result,
                 decision="DRY_RUN",
+                error=None,
+                overtime=False,
+                overtime_at=None,
                 finished_at=_utcnow_iso(),
             )
             _emit_job_event(
@@ -256,7 +420,9 @@ async def _run_job_inner(
             config=config,
             data_collector=_shared_data_collector,
         )
-        _log(f"[Checkpoint] Job {job_id}: TradingAgentsGraph initialized (selected_analysts={request.selected_analysts})")
+        _log(
+            f"[Checkpoint] Job {job_id}: TradingAgentsGraph initialized (selected_analysts={request.selected_analysts})"
+        )
         final_state: Optional[Dict[str, Any]] = None
 
         # 强制单周期：多个 horizon 时只取第一个，避免 dual-horizon 双倍开销
@@ -280,9 +446,13 @@ async def _run_job_inner(
                 # 直接 POST /v1/analyze 时的兜底（无预解析 intent）
                 _log(f"[Checkpoint] Job {job_id}: parsing intent from query (no pre-parsed intent)")
                 try:
-                    user_intent = await asyncio.to_thread(_parse_intent, request.query, graph.quick_thinking_llm, fallback_ticker=ticker)
+                    user_intent = await asyncio.to_thread(
+                        _parse_intent, request.query, graph.quick_thinking_llm, fallback_ticker=ticker
+                    )
                 except Exception as _intent_exc:
-                    logger.error(f"[Checkpoint] Job {job_id}: intent parsing failed: {_intent_exc}\n{traceback.format_exc()}")
+                    logger.error(
+                        f"[Checkpoint] Job {job_id}: intent parsing failed: {_intent_exc}\n{traceback.format_exc()}"
+                    )
                     raise
                 if not request.horizons:
                     request.horizons = user_intent["horizons"]
@@ -301,35 +471,58 @@ async def _run_job_inner(
 
             # 2. 一次性采集数据，短线/中线共用缓存
             lookback_label = "14天关键行情" if request.horizons == ["short"] else "90天全量行情、财务、新闻、资金"
-            _emit_job_event(job_id, "agent.tool_call", {
-                "agent": "数据采集", "tool": "data_collector",
-                "description": f"预加载 {ticker} 近{lookback_label}数据…",
-            })
-            _log(f"[Checkpoint] Job {job_id}: starting data collection for {ticker} {request.trade_date} (horizons={request.horizons})")
+            _emit_job_event(
+                job_id,
+                "agent.tool_call",
+                {
+                    "agent": "数据采集",
+                    "tool": "data_collector",
+                    "description": f"预加载 {ticker} 近{lookback_label}数据…",
+                },
+            )
+            _log(
+                f"[Checkpoint] Job {job_id}: starting data collection for {ticker} {request.trade_date} (horizons={request.horizons})"
+            )
             _log(f"[DualHorizon] Collecting data for {ticker} {request.trade_date} (horizons={request.horizons})…")
             collect_start_t = time.time()
             try:
                 await asyncio.wait_for(
-                    asyncio.to_thread(graph.data_collector.collect, ticker, request.trade_date, horizons=request.horizons),
-                    timeout=60.0  # 1分钟数据采集超时（生产环境优化）
+                    asyncio.to_thread(
+                        graph.data_collector.collect, ticker, request.trade_date, horizons=request.horizons
+                    ),
+                    timeout=60.0,  # 1分钟数据采集超时（生产环境优化）
                 )
             except asyncio.TimeoutError:
                 _log(f"[Checkpoint] Job {job_id}: data collection timed out after 120s, continuing with partial data")
             except Exception as _collect_exc:
-                logger.error(f"[Checkpoint] Job {job_id}: data collection FAILED after {time.time() - collect_start_t:.2f}s: {_collect_exc}\n{traceback.format_exc()}")
+                logger.error(
+                    f"[Checkpoint] Job {job_id}: data collection FAILED after {time.time() - collect_start_t:.2f}s: {_collect_exc}\n{traceback.format_exc()}"
+                )
                 raise
             _log(f"[Checkpoint] Job {job_id}: data collection completed in {time.time() - collect_start_t:.2f}s")
             _log(f"[Timer] Data Collection step in _run_job took {time.time() - collect_start_t:.2f}s")
 
-            _emit_job_event(job_id, "agent.tool_call", {
-                "agent": "数据采集", "tool": "data_collector",
-                "description": "数据采集完成，开始多维度分析",
-            })
+            _emit_job_event(
+                job_id,
+                "agent.tool_call",
+                {
+                    "agent": "数据采集",
+                    "tool": "data_collector",
+                    "description": "数据采集完成，开始多维度分析",
+                },
+            )
 
             report_keys = (
-                "market_report", "sentiment_report", "news_report", "fundamentals_report",
-                "macro_report", "smart_money_report", "volume_price_report",
-                "investment_plan", "trader_investment_plan", "final_trade_decision",
+                "market_report",
+                "sentiment_report",
+                "news_report",
+                "fundamentals_report",
+                "macro_report",
+                "smart_money_report",
+                "volume_price_report",
+                "investment_plan",
+                "trader_investment_plan",
+                "final_trade_decision",
             )
 
             horizon_states: Dict[str, Any] = {}
@@ -349,9 +542,14 @@ async def _run_job_inner(
                 )
 
                 horizon_label = "短线" if horizon == "short" else "中线"
-                _emit_job_event(job_id, "agent.horizon_start", {
-                    "horizon": horizon, "label": horizon_label,
-                })
+                _emit_job_event(
+                    job_id,
+                    "agent.horizon_start",
+                    {
+                        "horizon": horizon,
+                        "label": horizon_label,
+                    },
+                )
                 # 每轮重置 tracker，前端进度条重新走一遍
                 h_tracker = AgentProgressTracker(horizon_analysts, job_id, horizon=horizon)
                 _emit_job_event(job_id, "agent.snapshot", h_tracker.snapshot())
@@ -370,14 +568,16 @@ async def _run_job_inner(
                 h_args["config"]["configurable"] = {"thread_id": f"{job_id}_{horizon}"}
 
                 init_state = horizon_graph.propagator.create_initial_state(
-                    ticker, request.trade_date,
+                    ticker,
+                    request.trade_date,
                     user_context=user_context_payload,
                     selected_analysts=horizon_analysts,
                     request_source=request_source,
-                    user_intent=user_intent, horizon=horizon,
+                    user_intent=user_intent,
+                    horizon=horizon,
                 )
                 last_report: Dict[str, str] = {}
-                seen: Dict[str, bool] = {}   # 追踪哪些字段已出现过，避免重复事件
+                seen: Dict[str, bool] = {}  # 追踪哪些字段已出现过，避免重复事件
                 horizon_final = None
                 chunk_count = 0
 
@@ -408,7 +608,9 @@ async def _run_job_inner(
                     async for chunk in horizon_graph.graph.astream(init_state, **h_args):
                         chunk_count += 1
                         if chunk_count == 1:
-                            _log(f"[Checkpoint] Job {job_id}: horizon '{horizon}' received first astream chunk (elapsed {time.time() - horizon_start_t:.2f}s)")
+                            _log(
+                                f"[Checkpoint] Job {job_id}: horizon '{horizon}' received first astream chunk (elapsed {time.time() - horizon_start_t:.2f}s)"
+                            )
                         horizon_final = chunk
 
                         # ── 并行感知的状态推进 ──────────────────
@@ -467,7 +669,7 @@ async def _run_job_inner(
                         if db_updates:
                             _pending_db_updates.update(db_updates)
                             # 触发条件：累计≥5个字段 或 距上次flush≥2秒
-                            if (len(_pending_db_updates) >= 5 or (time.time() - _last_db_flush) >= 2.0):
+                            if len(_pending_db_updates) >= 5 or (time.time() - _last_db_flush) >= 2.0:
                                 _flush_horizon_db()
                     # 循环结束：强制flush剩余更新
                     _flush_horizon_db()
@@ -531,9 +733,7 @@ async def _run_job_inner(
                 "macro_report": primary_r.get("macro_report", ""),
                 "smart_money_report": primary_r.get("smart_money_report", ""),
                 "volume_price_report": primary_r.get("volume_price_report", ""),
-                "analyst_traces": (
-                    short_r.get("analyst_traces", []) + medium_r.get("analyst_traces", [])
-                ),
+                "analyst_traces": (short_r.get("analyst_traces", []) + medium_r.get("analyst_traces", [])),
             }
             _log(f"[Checkpoint] Job {job_id}: all horizons completed, starting structured extraction")
             # LLM 结构化提取（目标价、止损、信心、风险、关键指标）
@@ -549,7 +749,9 @@ async def _run_job_inner(
                 )
                 _log(f"[Checkpoint] Job {job_id}: structured extraction completed")
             except Exception as e:
-                logger.error(f"[Checkpoint] Job {job_id}: structured extraction failed (non-fatal): {e}\n{traceback.format_exc()}")
+                logger.error(
+                    f"[Checkpoint] Job {job_id}: structured extraction failed (non-fatal): {e}\n{traceback.format_exc()}"
+                )
 
             resolved = await asyncio.to_thread(
                 report_service.resolve_report_fields,
@@ -558,16 +760,19 @@ async def _run_job_inner(
                 target_price_override=structured.target_price if structured else None,
                 stop_loss_override=structured.stop_loss_price if structured else None,
             )
-            result.update({
-                "direction": resolved["direction"],
-                "confidence": resolved["confidence"],
-                "target_price": resolved["target_price"],
-                "stop_loss_price": resolved["stop_loss_price"],
-            })
+            result.update(
+                {
+                    "direction": resolved["direction"],
+                    "confidence": resolved["confidence"],
+                    "target_price": resolved["target_price"],
+                    "stop_loss_price": resolved["stop_loss_price"],
+                }
+            )
 
             # 自动保存报告到数据库
             _log(f"[Checkpoint] Job {job_id}: saving report to DB (save_report={save_report})")
             if save_report:
+
                 def _save_report_sync():
                     with get_db_ctx() as save_db:
                         report_service.create_report(
@@ -587,26 +792,36 @@ async def _run_job_inner(
                         )
                         save_db.commit()
 
-                try:
-                    await asyncio.to_thread(_save_report_sync)
-                    _log(f"[Checkpoint] Job {job_id}: report saved to DB successfully")
-                except Exception as e:
-                    logger.error(f"[Checkpoint] Job {job_id}: failed to save report to DB: {e}\n{traceback.format_exc()}")
+                await _save_report_or_raise(job_id, _save_report_sync, stage="save")
 
             # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
             _log(f"[Checkpoint] Job {job_id}: marking job as completed (dual_horizon)")
-            _set_job(job_id, status="completed", result=result,
-                     decision=decision, finished_at=_utcnow_iso())
-            _emit_job_event(job_id, "job.completed", {
-                "job_id": job_id, "decision": decision,
-                "direction": result["direction"],
-                "result": result, "mode": "dual_horizon",
-                "risk_items": [r.model_dump() for r in structured.risks] if structured else [],
-                "key_metrics": [m.model_dump() for m in structured.key_metrics] if structured else [],
-                "confidence": result["confidence"],
-                "target_price": result["target_price"],
-                "stop_loss_price": result["stop_loss_price"],
-            })
+            _set_job(
+                job_id,
+                status="completed",
+                result=result,
+                decision=decision,
+                error=None,
+                overtime=False,
+                overtime_at=None,
+                finished_at=_utcnow_iso(),
+            )
+            _emit_job_event(
+                job_id,
+                "job.completed",
+                {
+                    "job_id": job_id,
+                    "decision": decision,
+                    "direction": result["direction"],
+                    "result": result,
+                    "mode": "dual_horizon",
+                    "risk_items": [r.model_dump() for r in structured.risks] if structured else [],
+                    "key_metrics": [m.model_dump() for m in structured.key_metrics] if structured else [],
+                    "confidence": result["confidence"],
+                    "target_price": result["target_price"],
+                    "stop_loss_price": result["stop_loss_price"],
+                },
+            )
             _log(f"Job completed successfully: {job_id}")
             _log(f"[Timer] TOTAL Job execution (dual_horizon) took {time.time() - job_start_t:.2f}s")
             return
@@ -679,9 +894,7 @@ async def _run_job_inner(
                             tracker._set_status(aname, "completed")
 
                     # 2. 分析师全部完成 → 研究团队开始
-                    all_analysts_done = all(
-                        seen.get(ANALYST_REPORT_MAP.get(a, "")) for a in tracker.selected_analysts
-                    )
+                    all_analysts_done = all(seen.get(ANALYST_REPORT_MAP.get(a, "")) for a in tracker.selected_analysts)
                     if all_analysts_done and not seen.get("_research_started"):
                         seen["_research_started"] = True
                         tracker._set_status(ANALYST_AGENT_NAMES["bull"], "in_progress")
@@ -720,7 +933,7 @@ async def _run_job_inner(
                     if db_updates:
                         _pending_db_updates_single.update(db_updates)
                         # 触发条件：累计≥5个字段 或 距上次flush≥2秒
-                        if (len(_pending_db_updates_single) >= 5 or (time.time() - _last_db_flush_single) >= 2.0):
+                        if len(_pending_db_updates_single) >= 5 or (time.time() - _last_db_flush_single) >= 2.0:
                             _flush_single_db()
                 # 循环结束：强制flush剩余更新
                 _flush_single_db()
@@ -736,8 +949,14 @@ async def _run_job_inner(
                         _log(f"[Agent Message] {agent_name}: {content[:200]}...")
 
                     for tool_call in getattr(msg, "tool_calls", []) or []:
-                        tool_name = tool_call.get("name", "unknown") if isinstance(tool_call, dict) else getattr(tool_call, "name", "unknown")
-                        tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
+                        tool_name = (
+                            tool_call.get("name", "unknown")
+                            if isinstance(tool_call, dict)
+                            else getattr(tool_call, "name", "unknown")
+                        )
+                        tool_args = (
+                            tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
+                        )
                         _log(f"[Tool Call] {agent_name}: {tool_name}")
 
                         agent_display = agent_name
@@ -819,15 +1038,18 @@ async def _run_job_inner(
         )
 
         # 注入结果字典以便通知和保存使用
-        result.update({
-            "direction": resolved["direction"],
-            "confidence": resolved["confidence"],
-            "target_price": resolved["target_price"],
-            "stop_loss_price": resolved["stop_loss_price"],
-        })
+        result.update(
+            {
+                "direction": resolved["direction"],
+                "confidence": resolved["confidence"],
+                "target_price": resolved["target_price"],
+                "stop_loss_price": resolved["stop_loss_price"],
+            }
+        )
 
         # 自动保存/收口报告到数据库
         if save_report:
+
             def _save_report_final_sync():
                 with get_db_ctx() as save_db:
                     try:
@@ -847,7 +1069,7 @@ async def _run_job_inner(
                             analyst_traces=result.get("analyst_traces"),
                         )
                         save_db.commit()
-                    except Exception as e:
+                    except Exception:
                         try:
                             save_db.rollback()
                         except Exception:
@@ -855,15 +1077,19 @@ async def _run_job_inner(
                         raise
 
             try:
-                await asyncio.to_thread(_save_report_final_sync)
+                await _save_report_or_raise(job_id, _save_report_final_sync, stage="finalize")
             except Exception as e:
                 _log(f"Failed to finalize report (DB save error): {e}")
+                raise
         # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
         _set_job(
             job_id,
             status="completed",
             result=result,
             decision=decision,
+            error=None,
+            overtime=False,
+            overtime_at=None,
             finished_at=_utcnow_iso(),
         )
         _emit_job_event(
@@ -884,20 +1110,24 @@ async def _run_job_inner(
         _log(f"Job completed successfully: {job_id}")
         _log(f"[Timer] TOTAL Job execution (single_horizon) took {time.time() - job_start_t:.2f}s")
     except Exception as exc:
-        err_msg = f"{type(exc).__name__}: {exc}"
+        err_msg = _humanize_analysis_error(f"{type(exc).__name__}: {exc}")
         _set_job(
             job_id,
             status="failed",
             error=err_msg,
+            overtime=False,
+            overtime_at=None,
             traceback=traceback.format_exc(),
             finished_at=_utcnow_iso(),
         )
 
         # ── Persistent failure recording (short-lived session) ──
         try:
+
             def _record_failure():
                 with get_db_ctx() as err_db:
                     report_service.mark_report_failed(err_db, job_id, f"{err_msg}\n\n{traceback.format_exc()}")
+
             await asyncio.to_thread(_record_failure)
         except Exception as db_exc:
             _log(f"Failed to record failure in DB: {db_exc}")

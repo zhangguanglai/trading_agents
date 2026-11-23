@@ -2,6 +2,7 @@
 
 Admin reply and email notification are handled by the separate admin project.
 """
+
 from __future__ import annotations
 
 import logging
@@ -50,8 +51,12 @@ def mark_read(db: Session, feedback_id: str, user_id: str) -> Optional[FeedbackD
 
 
 def unread_count(db: Session, user_id: str) -> int:
-    return db.query(FeedbackDB).filter(
-        FeedbackDB.user_id == user_id,
-        FeedbackDB.admin_reply.isnot(None),
-        FeedbackDB.is_read.is_(False),
-    ).count()
+    return (
+        db.query(FeedbackDB)
+        .filter(
+            FeedbackDB.user_id == user_id,
+            FeedbackDB.admin_reply.isnot(None),
+            FeedbackDB.is_read.is_(False),
+        )
+        .count()
+    )

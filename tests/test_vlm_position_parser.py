@@ -1,4 +1,5 @@
 """Tests for VLM-based position image parsing."""
+
 import json
 from unittest.mock import patch
 
@@ -7,10 +8,24 @@ def test_parse_position_image_returns_positions():
     """VLM parser extracts positions from mock LLM response."""
     from api.services.vlm_position_parser import parse_position_image
 
-    mock_llm_response = json.dumps([
-        {"symbol": "600519", "name": "贵州茅台", "current_position": 100, "average_cost": 1750.0, "market_value": 180000.0},
-        {"symbol": "000001", "name": "平安银行", "current_position": 5000, "average_cost": 12.5, "market_value": 62500.0},
-    ])
+    mock_llm_response = json.dumps(
+        [
+            {
+                "symbol": "600519",
+                "name": "贵州茅台",
+                "current_position": 100,
+                "average_cost": 1750.0,
+                "market_value": 180000.0,
+            },
+            {
+                "symbol": "000001",
+                "name": "平安银行",
+                "current_position": 5000,
+                "average_cost": 12.5,
+                "market_value": 62500.0,
+            },
+        ]
+    )
 
     with patch("api.services.vlm_position_parser.call_vlm") as mock_vlm:
         mock_vlm.return_value = mock_llm_response
@@ -53,11 +68,13 @@ def test_parse_response_handles_invalid_json():
 def test_parse_response_skips_items_without_symbol():
     from api.services.vlm_position_parser import _parse_response
 
-    raw = json.dumps([
-        {"symbol": "600519", "name": "茅台"},
-        {"name": "无代码"},
-        {"symbol": "", "name": "空代码"},
-    ])
+    raw = json.dumps(
+        [
+            {"symbol": "600519", "name": "茅台"},
+            {"name": "无代码"},
+            {"symbol": "", "name": "空代码"},
+        ]
+    )
     result = _parse_response(raw)
     assert len(result) == 1
     assert result[0]["symbol"] == "600519"

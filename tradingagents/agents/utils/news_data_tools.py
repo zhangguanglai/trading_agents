@@ -2,6 +2,7 @@ from langchain_core.tools import tool
 from typing import Annotated
 from tradingagents.dataflows.interface import route_to_vendor
 
+
 @tool
 def get_news(
     ticker: Annotated[str, "Ticker symbol"],
@@ -19,6 +20,7 @@ def get_news(
         str: A formatted string containing news data
     """
     return route_to_vendor("get_news", ticker, start_date, end_date)
+
 
 @tool
 def get_global_news(
@@ -38,16 +40,19 @@ def get_global_news(
     """
     return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
 
+
 @tool
 def get_insider_transactions(
     ticker: Annotated[str, "ticker symbol"],
+    curr_date: Annotated[str | None, "Current analysis date in yyyy-mm-dd format"] = None,
 ) -> str:
     """
     Retrieve insider transaction information about a company.
     Uses the configured news_data vendor.
     Args:
         ticker (str): Ticker symbol of the company
+        curr_date (str | None): Analysis date used by date-sensitive fallbacks
     Returns:
         str: A report of insider transaction data
     """
-    return route_to_vendor("get_insider_transactions", ticker)
+    return route_to_vendor("get_insider_transactions", ticker, curr_date=curr_date)

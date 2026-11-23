@@ -14,7 +14,7 @@ import re
 import time as _time
 from io import StringIO
 from threading import Lock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -72,6 +72,7 @@ def _load_cn_stock_map() -> Dict[str, str]:
         # 2. Fallback to AKShare (slow, network-dependent)
         try:
             import akshare as ak
+
             # A-share stocks (static list, no anti-crawl issue)
             df = ak.stock_info_a_code_name()
             for _, row in df.iterrows():
@@ -108,7 +109,9 @@ def _load_cn_stock_map() -> Dict[str, str]:
             _cn_stock_map = result
             _cn_stock_reverse_map = {code: name for name, code in result.items()}
             _cn_stock_map_loaded_at = now
-            logger.info(f"[StockMap] Loaded {stock_count} stocks + {fund_count} ETFs/funds = {len(result)} total from AKShare.")
+            logger.info(
+                f"[StockMap] Loaded {stock_count} stocks + {fund_count} ETFs/funds = {len(result)} total from AKShare."
+            )
         except Exception as e:
             logger.info(f"[StockMap] Failed to load: {e}")
             if _cn_stock_map is None:
@@ -145,8 +148,7 @@ def _search_cn_stock_by_name(query: str) -> Optional[str]:
     if query in stock_map:
         return stock_map[query]
     # 2. Partial match: query is substring of a stock name or vice versa
-    candidates = [(name, code) for name, code in stock_map.items()
-                  if query in name or name in query]
+    candidates = [(name, code) for name, code in stock_map.items() if query in name or name in query]
     if len(candidates) == 1:
         return candidates[0][1]
     # 3. If multiple partial matches, pick the one with shortest name (closest match)
@@ -290,7 +292,9 @@ def _parse_stock_csv(raw: str) -> List[Dict[str, Any]]:
                                 "high": float(row["High"]),
                                 "low": float(row["Low"]),
                                 "close": float(row["Close"]),
-                                "volume": float(row["Volume"]) if "Volume" in df.columns and pd.notna(row.get("Volume")) else None,
+                                "volume": float(row["Volume"])
+                                if "Volume" in df.columns and pd.notna(row.get("Volume"))
+                                else None,
                             }
                         )
                     return candles
@@ -422,7 +426,11 @@ def _fetch_index_kline(symbol: str, start_date: str, end_date: str) -> List[Dict
             prev_close: float | None = None
             for _, row in df.iterrows():
                 close = float(row["Close"])
-                change = float(row["Change"]) if "Change" in df.columns and pd.notna(row.get("Change")) else (close - prev_close if prev_close is not None else None)
+                change = (
+                    float(row["Change"])
+                    if "Change" in df.columns and pd.notna(row.get("Change"))
+                    else (close - prev_close if prev_close is not None else None)
+                )
                 change_pct = (
                     float(row["ChangePercent"])
                     if "ChangePercent" in df.columns and pd.notna(row.get("ChangePercent"))
@@ -435,11 +443,17 @@ def _fetch_index_kline(symbol: str, start_date: str, end_date: str) -> List[Dict
                         "high": float(row["High"]),
                         "low": float(row["Low"]),
                         "close": close,
-                        "volume": float(row["Volume"]) if "Volume" in df.columns and pd.notna(row.get("Volume")) else None,
-                        "amount": float(row["Amount"]) if "Amount" in df.columns and pd.notna(row.get("Amount")) else None,
+                        "volume": float(row["Volume"])
+                        if "Volume" in df.columns and pd.notna(row.get("Volume"))
+                        else None,
+                        "amount": float(row["Amount"])
+                        if "Amount" in df.columns and pd.notna(row.get("Amount"))
+                        else None,
                         "change": change,
                         "change_percent": change_pct,
-                        "turnover_rate": float(row["TurnoverRate"]) if "TurnoverRate" in df.columns and pd.notna(row.get("TurnoverRate")) else None,
+                        "turnover_rate": float(row["TurnoverRate"])
+                        if "TurnoverRate" in df.columns and pd.notna(row.get("TurnoverRate"))
+                        else None,
                     }
                 )
                 prev_close = close

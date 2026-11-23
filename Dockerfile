@@ -1,14 +1,14 @@
 # Stage 1: Build Frontend (始终在原生架构运行以提速)
-FROM --platform=$BUILDPLATFORM node:25-slim AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN npm install
+RUN npm ci
 COPY frontend/ ./
 # 生产环境构建：移除 .env.local 使前端使用相对路径（同域名）
 RUN rm -f .env.local && npm run build
 
 # Stage 2: Final Image (多架构目标镜像)
-FROM ghcr.io/astral-sh/uv:python3.10-bookworm-slim AS runtime
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS runtime
 WORKDIR /app
 
 # 安装基础系统依赖
@@ -25,6 +25,9 @@ RUN uv sync --frozen --no-install-project --no-dev
 COPY api/ ./api/
 COPY tradingagents/ ./tradingagents/
 COPY scheduler/ ./scheduler/
+COPY docker-entrypoint.py ./docker-entrypoint.py
+COPY alembic.ini ./alembic.ini
+COPY migrations/ ./migrations/
 
 # 安装项目本身，避免 uv run 启动时重复安装
 RUN uv sync --frozen --no-dev
@@ -48,5 +51,8 @@ ENV PYTHONPATH=/app
 # 生产环境使用 /app/data 目录存储SQLite数据库，配合Railway Volume实现持久化
 ENV DATABASE_URL=sqlite:///./data/tradingagents.db
 
-# 启动命令
-CMD ["uv", "run", "--no-sync", "tradingagents-api"]
+# 启动命令（同一容器内运行 API 服务与定时任务调度器；
+# 只跑单进程时可覆盖命令，如 uv run --no-sync tradingagents-api）
+# 显式使用 venv 解释器：Windows 检出可能带 CRLF，直接执行脚本会因 shebang 变成
+# `python3\r` 而报 127，这里绕开 shebang 依赖。
+CMD ["/app/.venv/bin/python", "/app/docker-entrypoint.py"]

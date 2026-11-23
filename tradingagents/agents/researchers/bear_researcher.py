@@ -1,6 +1,3 @@
-from langchain_core.messages import AIMessage
-import time
-import json
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
@@ -70,15 +67,19 @@ def create_bear_researcher(llm, memory):
             if tracker:
                 tracker._emit_token("Bear Researcher", "investment_debate_state", content)
                 tracker.emit_debate_token(
-                    debate="research", agent="Bear Researcher",
-                    round_num=debate_round, token=content,
+                    debate="research",
+                    agent="Bear Researcher",
+                    round_num=debate_round,
+                    token=content,
                 )
 
         # ── 推送辩论完整消息（标记流式结束）──
         if tracker:
             tracker.emit_debate_message(
-                debate="research", agent="Bear Researcher",
-                round_num=debate_round, content=full_content,
+                debate="research",
+                agent="Bear Researcher",
+                round_num=debate_round,
+                content=full_content,
             )
 
         new_investment_debate_state = update_debate_state_with_payload(

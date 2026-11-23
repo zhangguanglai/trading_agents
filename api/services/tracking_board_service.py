@@ -170,11 +170,7 @@ def _summarize_trader_advice(text: str | None, fallback_text: str | None = None)
             if match:
                 return _clip_summary(match.group(1))
 
-        lines = [
-            _clip_summary(line.strip(" -*\t"))
-            for line in _strip_markdown(source).splitlines()
-            if line.strip()
-        ]
+        lines = [_clip_summary(line.strip(" -*\t")) for line in _strip_markdown(source).splitlines() if line.strip()]
         for line in lines:
             if len(line) >= 6 and not re.match(r"^[一二三四五六七八九十0-9]+[、.)：:]?$", line):
                 return line

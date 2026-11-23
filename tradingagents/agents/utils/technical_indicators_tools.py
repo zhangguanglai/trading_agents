@@ -2,6 +2,7 @@ from langchain_core.tools import tool
 from typing import Annotated
 from tradingagents.dataflows.interface import route_to_vendor
 
+
 @tool
 def get_indicators(
     symbol: Annotated[str, "ticker symbol of the company"],

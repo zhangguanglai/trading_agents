@@ -42,24 +42,38 @@ def create_smart_money_analyst(llm, data_collector=None):
             volume = pool.get("indicators", {}).get("vwma", "无数据")
         else:
             from tradingagents.agents.utils.agent_utils import (
-                get_individual_fund_flow, get_lhb_detail, get_indicators,
+                get_individual_fund_flow,
+                get_lhb_detail,
+                get_indicators,
             )
-            
+
             if is_hk:
-                fund_flow = "港股暂无主力资金流向数据（Tushare未提供港股资金流向接口）。分析将基于成交量和价量关系进行。"
+                fund_flow = (
+                    "港股暂无主力资金流向数据（Tushare未提供港股资金流向接口）。分析将基于成交量和价量关系进行。"
+                )
                 lhb = "港股无龙虎榜机制。"
-                volume = await _safe(get_indicators, {
-                    "symbol": ticker, "indicator": "volume",
-                    "curr_date": current_date, "look_back_days": 20,
-                })
+                volume = await _safe(
+                    get_indicators,
+                    {
+                        "symbol": ticker,
+                        "indicator": "volume",
+                        "curr_date": current_date,
+                        "look_back_days": 20,
+                    },
+                )
             else:
                 results = await asyncio.gather(
                     _safe(get_individual_fund_flow, {"symbol": ticker}),
                     _safe(get_lhb_detail, {"symbol": ticker, "date": current_date}),
-                    _safe(get_indicators, {
-                        "symbol": ticker, "indicator": "volume",
-                        "curr_date": current_date, "look_back_days": 20,
-                    })
+                    _safe(
+                        get_indicators,
+                        {
+                            "symbol": ticker,
+                            "indicator": "volume",
+                            "curr_date": current_date,
+                            "look_back_days": 20,
+                        },
+                    ),
                 )
                 fund_flow, lhb, volume = results
 
@@ -69,18 +83,26 @@ def create_smart_money_analyst(llm, data_collector=None):
         volume = volume or f"{ticker} 成交量指标（VWMA）暂无法获取。"
 
         messages = [
-            SystemMessage(content=(
-                system_message
-                + "\n\n请严格基于提供的量化数据输出分析，全程使用中文。"
-                + ("\n注意：港股分析缺少主力资金流向和龙虎榜数据，请重点基于成交量、价量关系、换手率等指标进行分析。" if is_hk else "")
-            )),
-            HumanMessage(content=(
-                horizon_ctx + "\n"
-                f"请分析 {ticker} 在 {current_date} 的主力资金行为。\n\n"
-                f"【近5日主力资金净流向】\n{fund_flow}\n\n"
-                f"【龙虎榜数据】\n{lhb}\n\n"
-                f"【成交量指标(vwma)】\n{volume}"
-            )),
+            SystemMessage(
+                content=(
+                    system_message
+                    + "\n\n请严格基于提供的量化数据输出分析，全程使用中文。"
+                    + (
+                        "\n注意：港股分析缺少主力资金流向和龙虎榜数据，请重点基于成交量、价量关系、换手率等指标进行分析。"
+                        if is_hk
+                        else ""
+                    )
+                )
+            ),
+            HumanMessage(
+                content=(
+                    horizon_ctx + "\n"
+                    f"请分析 {ticker} 在 {current_date} 的主力资金行为。\n\n"
+                    f"【近5日主力资金净流向】\n{fund_flow}\n\n"
+                    f"【龙虎榜数据】\n{lhb}\n\n"
+                    f"【成交量指标(vwma)】\n{volume}"
+                )
+            ),
         ]
 
         # ── 实现 Token 级流式输出 ──────────────────
@@ -96,14 +118,16 @@ def create_smart_money_analyst(llm, data_collector=None):
         verdict, confidence = extract_verdict(full_content)
         return {
             "smart_money_report": full_content,
-            "analyst_traces": [{
-                "agent": "smart_money_analyst",
-                "horizon": horizon,
-                "data_window": "近期可用",
-                "key_finding": f"主力资金分析结论：{verdict}",
-                "verdict": verdict,
-                "confidence": confidence,
-            }],
+            "analyst_traces": [
+                {
+                    "agent": "smart_money_analyst",
+                    "horizon": horizon,
+                    "data_window": "近期可用",
+                    "key_finding": f"主力资金分析结论：{verdict}",
+                    "verdict": verdict,
+                    "confidence": confidence,
+                }
+            ],
         }
 
     return smart_money_analyst_node

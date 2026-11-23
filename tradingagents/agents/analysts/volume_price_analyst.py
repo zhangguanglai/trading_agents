@@ -33,11 +33,13 @@ def create_volume_price_analyst(llm, data_collector=None):
 
         messages = [
             SystemMessage(content=horizon_ctx + system_message + "\n\n请全程使用中文。"),
-            HumanMessage(content=(
-                f"以下是 {ticker} 在 {current_date} 的量价分析预计算数据（数据窗口：{data_window}）。\n\n"
-                f"{vpa_data}\n\n"
-                f"【原始 K 线数据参考】\n{stock_data}"
-            )),
+            HumanMessage(
+                content=(
+                    f"以下是 {ticker} 在 {current_date} 的量价分析预计算数据（数据窗口：{data_window}）。\n\n"
+                    f"{vpa_data}\n\n"
+                    f"【原始 K 线数据参考】\n{stock_data}"
+                )
+            ),
         ]
 
         tracker = current_tracker_var.get()
@@ -52,14 +54,16 @@ def create_volume_price_analyst(llm, data_collector=None):
 
         return {
             "volume_price_report": full_content,
-            "analyst_traces": [{
-                "agent": "volume_price_analyst",
-                "horizon": horizon,
-                "data_window": data_window,
-                "key_finding": f"量价分析结论：{verdict}",
-                "verdict": verdict,
-                "confidence": confidence,
-            }],
+            "analyst_traces": [
+                {
+                    "agent": "volume_price_analyst",
+                    "horizon": horizon,
+                    "data_window": data_window,
+                    "key_finding": f"量价分析结论：{verdict}",
+                    "verdict": verdict,
+                    "confidence": confidence,
+                }
+            ],
         }
 
     return volume_price_analyst_node

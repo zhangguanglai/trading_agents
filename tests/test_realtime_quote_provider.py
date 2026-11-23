@@ -1,4 +1,5 @@
 """Tests for realtime quote provider integration."""
+
 import json
 import pytest
 from unittest.mock import patch
@@ -9,22 +10,23 @@ def test_akshare_get_realtime_quotes_returns_structured_json():
     """CnAkshareProvider.get_realtime_quotes returns JSON with expected fields."""
     from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
 
-    mock_df = pd.DataFrame({
-        "代码": ["600519", "000001"],
-        "名称": ["贵州茅台", "平安银行"],
-        "最新价": [1800.0, 12.5],
-        "今开": [1790.0, 12.3],
-        "最高": [1810.0, 12.6],
-        "最低": [1785.0, 12.2],
-        "昨收": [1795.0, 12.4],
-        "成交量": [50000, 800000],
-        "成交额": [90000000, 10000000],
-    })
+    mock_df = pd.DataFrame(
+        {
+            "代码": ["600519", "000001"],
+            "名称": ["贵州茅台", "平安银行"],
+            "最新价": [1800.0, 12.5],
+            "今开": [1790.0, 12.3],
+            "最高": [1810.0, 12.6],
+            "最低": [1785.0, 12.2],
+            "昨收": [1795.0, 12.4],
+            "成交量": [50000, 800000],
+            "成交额": [90000000, 10000000],
+        }
+    )
 
     provider = CnAkshareProvider()
     # Mock Sina to fail so it falls back to Eastmoney mock
-    with patch.object(provider, "_fetch_quotes_sina", return_value="{}"), \
-         patch.object(provider, "_ak") as mock_ak:
+    with patch.object(provider, "_fetch_quotes_sina", return_value="{}"), patch.object(provider, "_ak") as mock_ak:
         mock_ak.return_value.stock_zh_a_spot_em.return_value = mock_df
         result = provider.get_realtime_quotes(["600519.SH", "000001.SZ"])
 
@@ -51,5 +53,6 @@ def test_akshare_get_realtime_quotes_empty_symbols():
 def test_route_to_vendor_resolves_realtime_quotes():
     """route_to_vendor can route get_realtime_quotes to the correct category."""
     from tradingagents.dataflows.interface import get_category_for_method
+
     category = get_category_for_method("get_realtime_quotes")
     assert category == "realtime_data"

@@ -39,30 +39,35 @@ def create_macro_analyst(llm, data_collector=None):
         else:
             from datetime import datetime, timedelta
             from tradingagents.agents.utils.agent_utils import get_board_fund_flow, get_news
+
             days = 7
             end_dt = datetime.strptime(current_date, "%Y-%m-%d")
             start_dt = end_dt - timedelta(days=days)
-            
+
             # Parallelize fallback fetches
             results = await asyncio.gather(
                 _safe(get_board_fund_flow, {}),
-                _safe(get_news, {
-                    "ticker": ticker, "start_date": start_dt.strftime("%Y-%m-%d"), "end_date": current_date,
-                })
+                _safe(
+                    get_news,
+                    {
+                        "ticker": ticker,
+                        "start_date": start_dt.strftime("%Y-%m-%d"),
+                        "end_date": current_date,
+                    },
+                ),
             )
             board_flow, recent_news = results
 
         messages = [
-            SystemMessage(content=(
-                system_message
-                + "\n\n请严格基于提供的数据输出报告，全程使用中文。"
-            )),
-            HumanMessage(content=(
-                horizon_ctx + "\n"
-                f"请分析 {ticker} 在 {current_date} 的宏观与板块环境。\n\n"
-                f"【今日行业板块资金流向】\n{board_flow}\n\n"
-                f"【近期相关新闻】\n{recent_news}"
-            )),
+            SystemMessage(content=(system_message + "\n\n请严格基于提供的数据输出报告，全程使用中文。")),
+            HumanMessage(
+                content=(
+                    horizon_ctx + "\n"
+                    f"请分析 {ticker} 在 {current_date} 的宏观与板块环境。\n\n"
+                    f"【今日行业板块资金流向】\n{board_flow}\n\n"
+                    f"【近期相关新闻】\n{recent_news}"
+                )
+            ),
         ]
 
         # ── 实现 Token 级流式输出 ──────────────────
@@ -78,14 +83,16 @@ def create_macro_analyst(llm, data_collector=None):
         verdict, confidence = extract_verdict(full_content)
         return {
             "macro_report": full_content,
-            "analyst_traces": [{
-                "agent": "macro_analyst",
-                "horizon": horizon,
-                "data_window": "板块数据",
-                "key_finding": f"宏观板块分析结论：{verdict}",
-                "verdict": verdict,
-                "confidence": confidence,
-            }],
+            "analyst_traces": [
+                {
+                    "agent": "macro_analyst",
+                    "horizon": horizon,
+                    "data_window": "板块数据",
+                    "key_finding": f"宏观板块分析结论：{verdict}",
+                    "verdict": verdict,
+                    "confidence": confidence,
+                }
+            ],
         }
 
     return macro_analyst_node

@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+import api.main as _api_main
 from api.database import VersionStatsDB, get_db
 from api.dependencies import _get_real_ip, _require_api_user
+from api.scheduler_heartbeat import scheduler_heartbeat_status
 from api.main import (
     BacktestRequest,
     SponsorItem,
     SponsorsResponse,
-    _report_version_stats,
 )
 from api.services import backtest_service as _bt, sponsor_service
 
@@ -27,8 +32,58 @@ _VS_RATE_INTERVAL = 3600  # at most once per hour per IP
 
 
 @router.get("/healthz")
-def healthz() -> Dict[str, str]:
-    return {"status": "ok"}
+async def healthz():
+    """健康检查，同时探测 asyncio 默认线程池是否被僵尸线程占满。
+
+    向默认 executor 提交一个 no-op，5 秒内排不上队即判定饱和并返回 503
+    （生产事故：无超时的网络调用把 worker 全部占死，所有依赖 to_thread
+    的接口静默挂起，前端表现为网关超时）。
+    """
+    payload: Dict[str, Any] = {"status": "ok"}
+    executor = _api_main._default_executor
+    if executor is not None:
+        payload["executor_queued"] = executor._work_queue.qsize()
+        payload["executor_threads"] = len(executor._threads)
+    try:
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(loop.run_in_executor(None, int), timeout=5)
+    except asyncio.TimeoutError:
+        payload["status"] = "thread_pool_starved"
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+@router.get("/readyz")
+def readyz(db: Session = Depends(get_db)):
+    """Report whether the API can serve traffic and its required peers are ready."""
+    checks: Dict[str, Any] = {}
+    try:
+        db.execute(text("SELECT 1"))
+        checks["database"] = {"status": "ok"}
+    except Exception as exc:
+        checks["database"] = {"status": "error", "error": type(exc).__name__}
+
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if redis_url:
+        redis_client = None
+        try:
+            import redis
+
+            redis_client = redis.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+            redis_client.ping()
+            checks["redis"] = {"status": "ok"}
+        except Exception as exc:
+            checks["redis"] = {"status": "error", "error": type(exc).__name__}
+        finally:
+            if redis_client is not None:
+                redis_client.close()
+
+    if os.getenv("TA_REQUIRE_SCHEDULER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        checks["scheduler"] = scheduler_heartbeat_status()
+
+    is_ready = all(check["status"] == "ok" for check in checks.values())
+    payload = {"status": "ok" if is_ready else "not_ready", "checks": checks}
+    return JSONResponse(status_code=200 if is_ready else 503, content=payload)
 
 
 @router.post("/api/version-stats")
@@ -61,10 +116,11 @@ def version_stats(payload: Dict[str, Any] = Body(...), request: Request = None, 
 def submit_backtest(
     request: BacktestRequest,
     db: Session = Depends(get_db),
-    current_user = Depends(_require_api_user),
+    current_user=Depends(_require_api_user),
 ) -> Dict:
     """提交历史回测任务，返回 job_id."""
     from api.main import _build_runtime_config
+
     config = _build_runtime_config(request.config_overrides or {}, user_id=current_user.id, db=db)
     job_id = _bt.submit(
         symbol=request.symbol,
@@ -88,7 +144,7 @@ def list_backtests() -> Dict:
 @router.get("/v1/backtest/{job_id}")
 def get_backtest(job_id: str) -> Dict:
     """获取回测任务状态和结果."""
-    from fastapi import HTTPException
+
     job = _bt.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="回测任务不存在")
@@ -98,7 +154,7 @@ def get_backtest(job_id: str) -> Dict:
 @router.delete("/v1/backtest/{job_id}")
 def delete_backtest(job_id: str) -> Dict:
     """删除回测任务."""
-    from fastapi import HTTPException
+
     if not _bt.delete_job(job_id):
         raise HTTPException(status_code=404, detail="回测任务不存在")
     return {"message": "已删除"}
@@ -149,17 +205,17 @@ def mount_static_files(app: FastAPI) -> None:
         async def serve_frontend(full_path: str):
             # 1. Define and resolve the absolute safe root
             base_path = os.path.realpath(dist_path)
-            
+
             # 2. Resolve the requested path (handling .. and symlinks)
             fullpath = os.path.realpath(os.path.join(base_path, full_path.lstrip("/")))
-            
+
             # 3. Security Check: The normalized path must start with the base_path
             if not fullpath.startswith(base_path):
                 return FileResponse(os.path.join(base_path, "index.html"))
-                
+
             # 4. Final check: if it's a valid file, serve it
             if os.path.isfile(fullpath):
                 return FileResponse(fullpath)
-                
+
             # Otherwise fallback to index.html for SPA routing
             return FileResponse(os.path.join(base_path, "index.html"))

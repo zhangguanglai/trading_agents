@@ -30,14 +30,21 @@ _global_config_overrides: Dict[str, Any] = {}
 # Allowlist for config_overrides from client requests.
 # Security: prevents injection of api_key, backend_url, or other sensitive keys.
 _CONFIG_OVERRIDES_ALLOWLIST = {
-    "llm_provider", "deep_think_llm", "quick_think_llm",
-    "max_debate_rounds", "max_risk_discuss_rounds",
+    "llm_provider",
+    "deep_think_llm",
+    "quick_think_llm",
+    "max_debate_rounds",
+    "max_risk_discuss_rounds",
     "prompt_language",
 }
 
 _CONFIG_ALLOWED_KEYS = {
-    "llm_provider", "deep_think_llm", "quick_think_llm",
-    "backend_url", "max_debate_rounds", "max_risk_discuss_rounds",
+    "llm_provider",
+    "deep_think_llm",
+    "quick_think_llm",
+    "backend_url",
+    "max_debate_rounds",
+    "max_risk_discuss_rounds",
 }
 _CONFIG_PREFERENCE_KEYS = {"email_report_enabled", "wecom_report_enabled"}
 _CONFIG_MODEL_KEYS = ("llm_provider", "backend_url", "quick_think_llm", "deep_think_llm")
@@ -52,6 +59,7 @@ _CONFIG_WARMUP_PROMPT = "Reply with the single word OK."
 
 
 # ── Config building ───────────────────────────────────────────────────────────
+
 
 def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in overrides.items():
@@ -93,9 +101,12 @@ def _user_config_overrides(user_id: Optional[str], db: Optional[Session] = None)
         return _query(own_db)
 
 
-def _build_runtime_config(overrides: Dict[str, Any], user_id: Optional[str] = None, db: Optional[Session] = None) -> Dict[str, Any]:
+def _build_runtime_config(
+    overrides: Dict[str, Any], user_id: Optional[str] = None, db: Optional[Session] = None
+) -> Dict[str, Any]:
     # Lazy import so that tests patching ``api.main.DEFAULT_CONFIG`` take effect.
     from api.main import DEFAULT_CONFIG
+
     config = deepcopy(DEFAULT_CONFIG)
     server_fallback_enabled = os.getenv("ALLOW_SERVER_LLM_FALLBACK", "1").strip().lower() in ("1", "true", "yes", "on")
     config["server_fallback_enabled"] = server_fallback_enabled
@@ -135,6 +146,7 @@ def _build_runtime_config(overrides: Dict[str, Any], user_id: Optional[str] = No
 
 # ── Masking helpers ───────────────────────────────────────────────────────────
 
+
 def _mask_secret_value(value: Optional[str], *, head: int = 4, tail: int = 4) -> Optional[str]:
     normalized = str(value or "").strip()
     if not normalized:
@@ -150,7 +162,7 @@ def _mask_wecom_webhook(webhook_url: Optional[str]) -> Optional[str]:
         return None
     prefix = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key="
     if normalized.startswith(prefix):
-        masked_key = _mask_secret_value(normalized[len(prefix):])
+        masked_key = _mask_secret_value(normalized[len(prefix) :])
         return f"{prefix}{masked_key}"
     if normalized.startswith("http"):
         if "key=" in normalized:
@@ -161,6 +173,7 @@ def _mask_wecom_webhook(webhook_url: Optional[str]) -> Optional[str]:
 
 
 # ── Warmup / probe helpers ────────────────────────────────────────────────────
+
 
 def _warmup_model_names(config: Dict[str, Any]) -> List[str]:
     seen: set[str] = set()
@@ -299,7 +312,7 @@ def _invoke_runtime_warmup(
         user_id,
         provider,
         [model for model, _ in targets],
-        base_url or 'default',
+        base_url or "default",
     )
 
     results: List[Dict[str, Any]] = []
@@ -320,12 +333,14 @@ def _invoke_runtime_warmup(
             content = str(raw).strip() or "<empty>"
             preview = content.replace("\n", " ")[:80]
             logger.info("[LLM Warmup] user=%s model=%s success response=%s", user_id, model, preview)
-            results.append({
-                "model": model,
-                "targets": labels,
-                "content": content,
-                "error": None,
-            })
+            results.append(
+                {
+                    "model": model,
+                    "targets": labels,
+                    "content": content,
+                    "error": None,
+                }
+            )
         except Exception as exc:
             detail = str(exc).strip() or "unknown error"
             errors.append(f"{model}: {detail}")
@@ -335,12 +350,14 @@ def _invoke_runtime_warmup(
                 model,
                 exc,
             )
-            results.append({
-                "model": model,
-                "targets": labels,
-                "content": None,
-                "error": detail[:200],
-            })
+            results.append(
+                {
+                    "model": model,
+                    "targets": labels,
+                    "content": None,
+                    "error": detail[:200],
+                }
+            )
 
     if not any(item.get("content") for item in results):
         raise HTTPException(
@@ -377,7 +394,9 @@ def _config_response_for_user(user: Optional[UserDB], db: Session) -> UserRuntim
         has_wecom_webhook=bool(webhook_url),
         wecom_webhook_display=_mask_wecom_webhook(webhook_url),
         server_fallback_enabled=bool(cfg.get("server_fallback_enabled", True)),
-        email_report_enabled=user.email_report_enabled if user and hasattr(user, 'email_report_enabled') else True,
+        email_report_enabled=user.email_report_enabled if user and hasattr(user, "email_report_enabled") else True,
         wecom_report_enabled=user.wecom_report_enabled if user and hasattr(user, "wecom_report_enabled") else True,
-        default_analysts=json.loads(user_cfg.default_analysts) if user_cfg and user_cfg.default_analysts else ["market", "news", "fundamentals", "macro", "smart_money"],
+        default_analysts=json.loads(user_cfg.default_analysts)
+        if user_cfg and user_cfg.default_analysts
+        else ["market", "news", "fundamentals", "macro", "smart_money"],
     )

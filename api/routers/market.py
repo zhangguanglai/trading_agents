@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -18,7 +18,6 @@ from api.main import (
     _normalize_symbol,
     _normalize_ths_code,
     _parse_stock_csv,
-    _search_cn_stock_by_name,
 )
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.interface import route_to_vendor
@@ -61,14 +60,14 @@ def get_kline(
 @router.get("/v1/market/hot-stocks")
 def get_hot_stocks(source: str = "em", limit: int = 30) -> Dict:
     """Return hot A-share stocks from different sources.
-    
+
     Args:
         source: Data source selection
             - 'em': 东方财富热榜 (EastMoney hot stocks)
             - 'xq': 雪球热门 (Xueqiu most-followed stocks)
             - 'ths': 连涨榜 (Consecutive rising stocks, not general hot list)
         limit: Maximum number of stocks to return
-    
+
     Returns:
         Dict with stocks list, total count, source info, and fallback status
     """
@@ -103,41 +102,47 @@ def get_hot_stocks(source: str = "em", limit: int = 30) -> Dict:
 
             if src == "em":
                 for i, (_, row) in enumerate(df.iterrows()):
-                    stocks.append({
-                        "rank": i + 1,
-                        "symbol": _normalize_ths_code(str(row.get("代码", ""))),
-                        "name": str(row.get("股票名称", "")),
-                        "price": float(row.get("最新价", 0) or 0),
-                        "change": float(row.get("涨跌额", 0) or 0),
-                        "change_pct": float(row.get("涨跌幅", 0) or 0),
-                        "extra": "",
-                    })
+                    stocks.append(
+                        {
+                            "rank": i + 1,
+                            "symbol": _normalize_ths_code(str(row.get("代码", ""))),
+                            "name": str(row.get("股票名称", "")),
+                            "price": float(row.get("最新价", 0) or 0),
+                            "change": float(row.get("涨跌额", 0) or 0),
+                            "change_pct": float(row.get("涨跌幅", 0) or 0),
+                            "extra": "",
+                        }
+                    )
 
             elif src == "xq":
                 for i, (_, row) in enumerate(df.iterrows()):
-                    stocks.append({
-                        "rank": i + 1,
-                        "symbol": _normalize_ths_code(str(row.get("股票代码", ""))),
-                        "name": str(row.get("股票简称", "")),
-                        "price": float(row.get("最新价", 0) or 0),
-                        "change": 0.0,
-                        "change_pct": 0.0,
-                        "extra": f"关注 {int(row.get('关注', 0)):,}",
-                    })
+                    stocks.append(
+                        {
+                            "rank": i + 1,
+                            "symbol": _normalize_ths_code(str(row.get("股票代码", ""))),
+                            "name": str(row.get("股票简称", "")),
+                            "price": float(row.get("最新价", 0) or 0),
+                            "change": 0.0,
+                            "change_pct": 0.0,
+                            "extra": f"关注 {int(row.get('关注', 0)):,}",
+                        }
+                    )
 
             elif src == "ths":
                 for i, (_, row) in enumerate(df.iterrows()):
                     days = int(row.get("连涨天数", 0) or 0)
                     change_pct = float(row.get("连续涨跌幅", 0) or 0)
-                    stocks.append({
-                        "rank": i + 1,
-                        "symbol": _normalize_ths_code(str(row.get("股票代码", ""))),
-                        "name": str(row.get("股票简称", "")),
-                        "price": float(row.get("收盘价", 0) or 0),
-                        "change": 0.0,
-                        "change_pct": change_pct,
-                        "extra": f"连涨{days}天",
-                    })
+                    stocks.append(
+                        {
+                            "rank": i + 1,
+                            "symbol": _normalize_ths_code(str(row.get("股票代码", ""))),
+                            "name": str(row.get("股票简称", "")),
+                            "price": float(row.get("收盘价", 0) or 0),
+                            "change": 0.0,
+                            "change_pct": change_pct,
+                            "extra": f"连涨{days}天",
+                        }
+                    )
 
             # 成功获取数据
             fallback_msg = f" (fallback from {source_configs[source][2]})" if src != source else ""
@@ -158,14 +163,14 @@ def get_hot_stocks(source: str = "em", limit: int = 30) -> Dict:
     # 所有数据源都失败
     raise HTTPException(
         status_code=503,
-        detail=f"All data sources failed. Last error: {type(last_error).__name__}: {str(last_error)[:200]}"
+        detail=f"All data sources failed. Last error: {type(last_error).__name__}: {str(last_error)[:200]}",
     )
 
 
 @router.get("/v1/market/stock-search")
 def search_stocks(
     q: str = Query("", min_length=1, max_length=20),
-    current_user = Depends(_require_api_user),
+    current_user=Depends(_require_api_user),
 ):
     """Search stocks by code prefix or name substring."""
     q = q.strip()

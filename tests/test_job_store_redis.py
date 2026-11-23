@@ -3,6 +3,7 @@
 Skipped automatically when Redis is not reachable on localhost.
 Uses DB 15 to avoid conflicts with production data.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ import redis
 
 _REDIS_TEST_URL = os.environ.get("REDIS_TEST_URL", "redis://localhost:6379/15")
 
+
 def _redis_available() -> bool:
     try:
         r = redis.Redis.from_url(_REDIS_TEST_URL, decode_responses=True)
@@ -26,6 +28,7 @@ def _redis_available() -> bool:
         return True
     except Exception:
         return False
+
 
 pytestmark = pytest.mark.skipif(
     not _redis_available(),
@@ -38,6 +41,7 @@ from api.job_store_redis import RedisJobStore  # noqa: E402
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def store():
@@ -53,6 +57,7 @@ def store():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_set_and_get(store: RedisJobStore):
     store.set_job("j1", status="running", symbol="AAPL")
@@ -83,6 +88,13 @@ def test_none_roundtrip(store: RedisJobStore):
     store.set_job("j1", result=None)
     job = store.get_job("j1")
     assert job["result"] is None
+
+
+def test_boolean_roundtrip(store: RedisJobStore):
+    store.set_job("j1", overtime=False)
+    assert store.get_job("j1")["overtime"] is False
+    store.set_job("j1", overtime=True)
+    assert store.get_job("j1")["overtime"] is True
 
 
 def test_complex_value_roundtrip(store: RedisJobStore):
@@ -122,7 +134,7 @@ def test_pubsub(store: RedisJobStore):
         # We need the subscriber thread to be up before publishing.
         # Advance the generator to start the thread, then emit events.
         # Use a small delay to let the thread subscribe.
-        it = gen.__aiter__()
+        gen.__aiter__()
 
         # Emit after a short delay to give listener time to subscribe
         async def _emit_later():
@@ -147,6 +159,36 @@ def test_pubsub(store: RedisJobStore):
         assert collected[2]["data"] == {"result": "ok"}
         for ev in collected:
             assert "timestamp" in ev
+
+    asyncio.run(scenario())
+
+
+def test_overtime_event_is_non_terminal_and_completion_still_arrives(store: RedisJobStore):
+    async def scenario():
+        store.set_job("j1", status="running", overtime=False)
+        collected = []
+
+        async def _emit_later():
+            # Redis Pub/Sub has no replay, so allow the listener thread to
+            # subscribe before publishing the lifecycle events.
+            await asyncio.sleep(0.3)
+            store.set_job("j1", status="running", overtime=True)
+            store.emit_event("j1", "job.overtime", {"elapsed_seconds": 1800})
+            await asyncio.sleep(0.05)
+            store.set_job("j1", status="completed", overtime=False)
+            store.emit_event("j1", "job.completed", {"result": "ok"})
+
+        emitter = asyncio.create_task(_emit_later())
+        async for event in store.subscribe("j1", poll_interval=1.0):
+            collected.append(event)
+        await emitter
+
+        assert [event["event"] for event in collected] == [
+            "job.overtime",
+            "job.completed",
+        ]
+        assert collected[0]["data"] == {"elapsed_seconds": 1800}
+        assert collected[1]["data"] == {"result": "ok"}
 
     asyncio.run(scenario())
 

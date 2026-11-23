@@ -18,7 +18,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Optional
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -70,12 +70,12 @@ from api.database import (
     init_db,
     get_db_ctx,
 )
-from api.job_store import get_job_store as _new_job_store
 from api.services import (
     auth_service,
     report_service,
     scheduled_service,
 )
+from api.scheduler_heartbeat import write_scheduler_heartbeat
 
 # Thin wrappers & job runner from the API module
 from api.services.job_service import (
@@ -83,9 +83,7 @@ from api.services.job_service import (
     _build_scheduled_analyze_request,
     _resolve_scheduled_trade_date,
     _run_job,
-    _set_job,
     _get_job,
-    _emit_job_event,
     get_job_store,
 )
 
@@ -93,6 +91,7 @@ from tradingagents.dataflows.providers.cn_akshare_provider import set_scheduled_
 
 
 # ── Semaphore-based concurrency slot ─────────────────────────────────────────
+
 
 @asynccontextmanager
 async def _concurrency_slot(job_id: str, symbol: str):
@@ -106,51 +105,48 @@ async def _concurrency_slot(job_id: str, symbol: str):
         yield
         return
 
-    _log(
-        f"[Scheduler] Waiting for slot job={job_id} symbol={symbol}"
-    )
+    _log(f"[Scheduler] Waiting for slot job={job_id} symbol={symbol}")
     await _semaphore.acquire()
     try:
-        _log(
-            f"[Scheduler] Acquired slot job={job_id} symbol={symbol}"
-        )
+        _log(f"[Scheduler] Acquired slot job={job_id} symbol={symbol}")
         yield
     finally:
         _semaphore.release()
-        _log(
-            f"[Scheduler] Released slot job={job_id} symbol={symbol}"
-        )
+        _log(f"[Scheduler] Released slot job={job_id} symbol={symbol}")
 
 
 # ── Notification ─────────────────────────────────────────────────────────────
 
-async def _send_scheduled_report_notifications(
-    user_id: str, report_id: str, symbol: str
-) -> None:
+
+async def _send_scheduled_report_notifications(user_id: str, report_id: str, symbol: str) -> None:
     """Send configured scheduled report notifications (email & WeCom)."""
     try:
         from api.services.email_report_service import send_report_email_with_retry
         from api.services.wecom_notification_service import send_report_message_with_retry
 
-        email_user = None
-        report_to_send = None
-        webhook_url = None
-        wecom_report_enabled = True
-        with get_db_ctx() as db:
-            user = db.query(UserDB).filter(UserDB.id == user_id).first()
-            report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
-            user_cfg = auth_service.get_user_llm_config(db, user_id)
-            webhook_url = auth_service.decrypt_secret(
-                getattr(user_cfg, "wecom_webhook_encrypted", None)
-            )
-            if report:
-                db.expunge(report)
-                report_to_send = report
-            if user:
-                wecom_report_enabled = getattr(user, "wecom_report_enabled", True)
-                if getattr(user, "email_report_enabled", True):
-                    db.expunge(user)
-                    email_user = user
+        def _load_notification_targets():
+            email_user = None
+            report_to_send = None
+            webhook_url = None
+            wecom_report_enabled = True
+            with get_db_ctx() as db:
+                user = db.query(UserDB).filter(UserDB.id == user_id).first()
+                report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
+                user_cfg = auth_service.get_user_llm_config(db, user_id)
+                webhook_url = auth_service.decrypt_secret(getattr(user_cfg, "wecom_webhook_encrypted", None))
+                if report:
+                    db.expunge(report)
+                    report_to_send = report
+                if user:
+                    wecom_report_enabled = getattr(user, "wecom_report_enabled", True)
+                    if getattr(user, "email_report_enabled", True):
+                        db.expunge(user)
+                        email_user = user
+            return email_user, report_to_send, webhook_url, wecom_report_enabled
+
+        email_user, report_to_send, webhook_url, wecom_report_enabled = await asyncio.to_thread(
+            _load_notification_targets
+        )
         if email_user and report_to_send:
             _log(f"[Scheduler] Sending email report for {symbol} to {email_user.email}")
             _create_tracked_task(
@@ -169,6 +165,7 @@ async def _send_scheduled_report_notifications(
 
 # ── Single scheduled analysis execution ──────────────────────────────────────
 
+
 async def _run_scheduled_analysis_once(
     task: dict,
     requested_trade_date: str,
@@ -186,20 +183,38 @@ async def _run_scheduled_analysis_once(
     _log(f"[Scheduler] {symbol} trade_date={actual_trade_date} (requested={requested_trade_date})")
 
     set_scheduled_task_context(True)
+
+    def _build_request_sync():
+        with get_db_ctx() as db:
+            scheduled_user_context = task.get("manual_user_context") or _build_imported_user_context(
+                db, user_id, symbol
+            )
+            return _build_scheduled_analyze_request(
+                db=db,
+                user_id=user_id,
+                symbol=symbol,
+                horizon=horizon,
+                trade_date=actual_trade_date,
+                scheduled_user_context=scheduled_user_context,
+            )
+
+    def _record_success_sync():
+        with get_db_ctx() as db:
+            if mark_schedule_run:
+                scheduled_service.mark_run_success(db, task_id, requested_trade_date, job_id)
+            else:
+                scheduled_service.record_manual_test_result(db, task_id, "success", report_id=job_id)
+
+    def _record_failure_sync():
+        with get_db_ctx() as db:
+            if mark_schedule_run:
+                scheduled_service.mark_run_failed(db, task_id, requested_trade_date)
+            else:
+                scheduled_service.record_manual_test_result(db, task_id, "failed")
+
     try:
         async with _concurrency_slot(job_id, symbol):
-            with get_db_ctx() as db:
-                scheduled_user_context = task.get("manual_user_context") or _build_imported_user_context(
-                    db, user_id, symbol
-                )
-                req = _build_scheduled_analyze_request(
-                    db=db,
-                    user_id=user_id,
-                    symbol=symbol,
-                    horizon=horizon,
-                    trade_date=actual_trade_date,
-                    scheduled_user_context=scheduled_user_context,
-                )
+            req = await asyncio.to_thread(_build_request_sync)
 
             await _run_job(
                 job_id,
@@ -212,21 +227,16 @@ async def _run_scheduled_analysis_once(
         job_state = _get_job(job_id)
         if job_state.get("status") == "failed":
             raise RuntimeError(job_state.get("error") or f"scheduled analysis job {job_id} failed")
-        with get_db_ctx() as db:
-            if mark_schedule_run:
-                scheduled_service.mark_run_success(db, task_id, requested_trade_date, job_id)
-            else:
-                scheduled_service.record_manual_test_result(db, task_id, "success", report_id=job_id)
+        await asyncio.to_thread(_record_success_sync)
         _log(f"[Scheduler] Completed {symbol}")
 
         await _send_scheduled_report_notifications(user_id, job_id, symbol)
     except Exception as e:
         logger.error(f"[Scheduler] Failed {symbol}: {e}\n{traceback.format_exc()}")
-        with get_db_ctx() as db:
-            if mark_schedule_run:
-                scheduled_service.mark_run_failed(db, task_id, requested_trade_date)
-            else:
-                scheduled_service.record_manual_test_result(db, task_id, "failed")
+        try:
+            await asyncio.to_thread(_record_failure_sync)
+        except Exception as db_exc:
+            logger.error(f"[Scheduler] Could not record failure: {db_exc}")
 
 
 async def _run_scheduled_job(task: dict, trade_date: str):
@@ -255,6 +265,7 @@ async def _run_scheduled_job(task: dict, trade_date: str):
 
 # ── Scheduler loop ───────────────────────────────────────────────────────────
 
+
 async def _scheduler_loop():
     """Background loop: check every minute for scheduled tasks to trigger.
 
@@ -268,6 +279,7 @@ async def _scheduler_loop():
 
     _log("[Scheduler] Loop started.")
     while True:
+        write_scheduler_heartbeat()
         await asyncio.sleep(60)
         try:
             now = datetime.now(tz=ZoneInfo("Asia/Shanghai"))
@@ -280,31 +292,34 @@ async def _scheduler_loop():
             if 8 * 60 < time_val < 20 * 60:
                 continue
 
-            with get_db_ctx() as db:
-                tasks = scheduled_service.get_pending_tasks(db, today, current_hhmm)
-                if not tasks:
-                    continue
+            def _claim_pending_tasks():
+                with get_db_ctx() as db:
+                    tasks = scheduled_service.get_pending_tasks(db, today, current_hhmm)
+                    if not tasks:
+                        return []
+                    for task in tasks:
+                        task.last_run_date = today
+                        task.last_run_status = "running"
+                    db.commit()
+                    return [
+                        {
+                            "id": task.id,
+                            "user_id": task.user_id,
+                            "symbol": task.symbol,
+                            "horizon": task.horizon,
+                        }
+                        for task in tasks
+                    ]
 
-                for task in tasks:
-                    task.last_run_date = today
-                    task.last_run_status = "running"
-                db.commit()
+            task_snapshots = await asyncio.to_thread(_claim_pending_tasks)
+            if not task_snapshots:
+                continue
 
-                task_snapshots = [
-                    {
-                        "id": task.id,
-                        "user_id": task.user_id,
-                        "symbol": task.symbol,
-                        "horizon": task.horizon,
-                    }
-                    for task in tasks
-                ]
-
-                _log(f"[Scheduler] Launching {len(task_snapshots)} tasks (staggered)")
-                for i, snap in enumerate(task_snapshots):
-                    if i > 0:
-                        await asyncio.sleep(1)
-                    _create_tracked_task(_run_scheduled_job(snap, today))
+            _log(f"[Scheduler] Launching {len(task_snapshots)} tasks (staggered)")
+            for i, snap in enumerate(task_snapshots):
+                if i > 0:
+                    await asyncio.sleep(1)
+                _create_tracked_task(_run_scheduled_job(snap, today))
 
         except Exception as e:
             logger.error(f"[Scheduler] Error: {e}")
@@ -312,14 +327,11 @@ async def _scheduler_loop():
 
 # ── Stale task recovery ──────────────────────────────────────────────────────
 
+
 def _recover_stale_tasks():
     """Reset tasks stuck in 'running' state (from previous crash/restart)."""
     with get_db_ctx() as db:
-        stale = (
-            db.query(ScheduledAnalysisDB)
-            .filter(ScheduledAnalysisDB.last_run_status == "running")
-            .all()
-        )
+        stale = db.query(ScheduledAnalysisDB).filter(ScheduledAnalysisDB.last_run_status == "running").all()
         if stale:
             recovered_count = 0
             reset_count = 0
@@ -349,17 +361,35 @@ def _recover_stale_tasks():
             )
         report_reset = report_service.recover_stale_active_reports(db)
         if report_reset["total"]:
-            _log(
-                "[Reports] Recovered %s stale active reports on startup (marked failed)."
-                % report_reset["total"]
-            )
+            _log("[Reports] Recovered %s stale active reports on startup (marked failed)." % report_reset["total"])
 
 
 # ── Startup / main ───────────────────────────────────────────────────────────
 
+
 async def _startup():
     """Initialize DB, pre-load caches, recover stale tasks, then run the loop."""
     global _semaphore, _executor
+
+    auth_service.validate_production_config()
+    write_scheduler_heartbeat()
+
+    # Each scheduled `_run_job` fans out many `asyncio.to_thread` calls (DB
+    # writes, akshare data collection, LLM extraction). The CPython default
+    # of `min(32, cpu_count + 4)` is too small to absorb concurrent jobs +
+    # the per-tick DB transaction the scheduler loop now runs in to_thread.
+    try:
+        loop = asyncio.get_running_loop()
+        executor_workers = int(os.getenv("ASYNCIO_DEFAULT_EXECUTOR_WORKERS", str(max(64, SCHEDULER_CONCURRENCY * 16))))
+        loop.set_default_executor(
+            ThreadPoolExecutor(
+                max_workers=executor_workers,
+                thread_name_prefix="ta-sched-asyncio",
+            )
+        )
+        _log(f"[Scheduler] Default asyncio executor set to {executor_workers} workers.")
+    except Exception as exc:
+        _log(f"[Scheduler] Could not configure default asyncio executor: {exc}")
 
     init_db()
     _log("Database initialized.")
